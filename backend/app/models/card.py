@@ -13,7 +13,7 @@ class Card(Base):
     __tablename__ = "cards"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    scryfall_id: Mapped[str] = mapped_column(String(36), unique=True, index=True)
+    card_uuid: Mapped[str] = mapped_column(String(36), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255), index=True)
     mana_cost: Mapped[str | None] = mapped_column(String(64))
     type_line: Mapped[str | None] = mapped_column(String(255))

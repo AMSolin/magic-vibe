@@ -1,10 +1,12 @@
 <script setup lang="ts">
-import { watch } from 'vue';
+import { ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
+import Checkbox from 'primevue/checkbox';
 import InputText from 'primevue/inputtext';
 import ProgressSpinner from 'primevue/progressspinner';
+import Select from 'primevue/select';
 
 import { useCardsStore } from '@/stores/cards';
 import { useCollectionStore } from '@/stores/collection';
@@ -12,7 +14,12 @@ import { useCollectionStore } from '@/stores/collection';
 const cardsStore = useCardsStore();
 const collectionStore = useCollectionStore();
 const { search, cards, loading, error } = storeToRefs(cardsStore);
-const { savingCardId } = storeToRefs(collectionStore);
+const { savingCardUuid } = storeToRefs(collectionStore);
+const conditions = ['NM', 'SP', 'MP', 'HP', 'D'];
+const languages = ['English', 'Russian', 'Japanese'];
+const addCondition = ref('NM');
+const addLanguage = ref('English');
+const addFoil = ref(false);
 
 watch(
   search,
@@ -26,6 +33,15 @@ watch(
     <div class="page-header">
       <h1>Cards</h1>
       <InputText v-model="search" class="search-input" placeholder="Search cards" />
+    </div>
+
+    <div class="add-defaults">
+      <Select v-model="addCondition" :options="conditions" size="small" aria-label="Condition" />
+      <Select v-model="addLanguage" :options="languages" size="small" aria-label="Language" />
+      <label class="checkbox-label">
+        <Checkbox v-model="addFoil" binary />
+        <span>Foil</span>
+      </label>
     </div>
 
     <ProgressSpinner v-if="loading" class="spinner" />
@@ -43,13 +59,22 @@ watch(
           <p class="card-text">{{ card.oracle_text }}</p>
         </template>
         <template #footer>
-          <Button
-            icon="pi pi-plus"
-            label="Add"
-            size="small"
-            :loading="savingCardId === card.id"
-            @click="collectionStore.addCard(card.id)"
-          />
+          <div class="add-card-controls">
+            <Button
+              icon="pi pi-plus"
+              label="Add"
+              size="small"
+              :loading="savingCardUuid === card.card_uuid"
+              @click="
+                collectionStore.addCard({
+                  card_uuid: card.card_uuid,
+                  condition_code: addCondition,
+                  foil: addFoil,
+                  language: addLanguage,
+                })
+              "
+            />
+          </div>
         </template>
       </Card>
     </div>

@@ -2,7 +2,7 @@ const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? '';
 
 export type Card = {
   id: number;
-  scryfall_id: string;
+  card_uuid: string;
   name: string;
   mana_cost: string | null;
   type_line: string | null;
@@ -13,14 +13,28 @@ export type Card = {
 
 export type CollectionItem = {
   id: number;
-  card_id: number;
+  card_uuid: string;
   card: Card;
   quantity: number;
-  finish: string;
-  language: string | null;
-  condition: string | null;
-  location: string | null;
+  condition_code: string;
+  foil: boolean;
+  language: string;
   created_at: string;
+};
+
+export type CollectionItemCreate = {
+  card_uuid: string;
+  quantity?: number;
+  condition_code?: string;
+  foil?: boolean;
+  language?: string;
+};
+
+export type CollectionItemUpdate = {
+  quantity?: number;
+  condition_code?: string;
+  foil?: boolean;
+  language?: string;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -53,10 +67,20 @@ export function listCollection(): Promise<CollectionItem[]> {
   return request<CollectionItem[]>('/api/collection');
 }
 
-export function addCollectionItem(cardId: number): Promise<CollectionItem> {
+export function addCollectionItem(payload: CollectionItemCreate): Promise<CollectionItem> {
   return request<CollectionItem>('/api/collection', {
     method: 'POST',
-    body: JSON.stringify({ card_id: cardId, quantity: 1 }),
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateCollectionItem(
+  itemId: number,
+  payload: CollectionItemUpdate,
+): Promise<CollectionItem> {
+  return request<CollectionItem>(`/api/collection/${itemId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
   });
 }
 

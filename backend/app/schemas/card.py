@@ -3,7 +3,7 @@ from pydantic import BaseModel, ConfigDict
 
 class CardRead(BaseModel):
     id: int
-    scryfall_id: str
+    card_uuid: str
     name: str
     mana_cost: str | None = None
     type_line: str | None = None
@@ -12,4 +12,3 @@ class CardRead(BaseModel):
     image_normal: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
-

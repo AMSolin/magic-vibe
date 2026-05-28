@@ -3,15 +3,18 @@ import { computed, ref } from 'vue';
 
 import {
   addCollectionItem,
+  type CollectionItemCreate,
   type CollectionItem,
   deleteCollectionItem,
   listCollection,
+  type CollectionItemUpdate,
+  updateCollectionItem,
 } from '@/shared/api';
 
 export const useCollectionStore = defineStore('collection', () => {
   const items = ref<CollectionItem[]>([]);
   const loading = ref(false);
-  const savingCardId = ref<number | null>(null);
+  const savingCardUuid = ref<string | null>(null);
   const error = ref<string | null>(null);
 
   const totalCards = computed(() => items.value.reduce((sum, item) => sum + item.quantity, 0));
@@ -28,16 +31,37 @@ export const useCollectionStore = defineStore('collection', () => {
     }
   }
 
-  async function addCard(cardId: number): Promise<void> {
-    savingCardId.value = cardId;
+  async function addCard(payload: CollectionItemCreate): Promise<void> {
+    savingCardUuid.value = payload.card_uuid;
     error.value = null;
     try {
-      const item = await addCollectionItem(cardId);
-      items.value = [item, ...items.value];
+      const item = await addCollectionItem({ quantity: 1, ...payload });
+      const existingIndex = items.value.findIndex((existingItem) => existingItem.id === item.id);
+      if (existingIndex === -1) {
+        items.value = [item, ...items.value];
+      } else {
+        items.value.splice(existingIndex, 1, item);
+      }
     } catch {
       error.value = 'Could not add card';
     } finally {
-      savingCardId.value = null;
+      savingCardUuid.value = null;
+    }
+  }
+
+  async function updateItem(itemId: number, payload: CollectionItemUpdate): Promise<void> {
+    const previousItems = [...items.value];
+    error.value = null;
+
+    try {
+      const item = await updateCollectionItem(itemId, payload);
+      const itemIndex = items.value.findIndex((existingItem) => existingItem.id === item.id);
+      if (itemIndex !== -1) {
+        items.value.splice(itemIndex, 1, item);
+      }
+    } catch {
+      items.value = previousItems;
+      error.value = 'Could not update card';
     }
   }
 
@@ -57,11 +81,12 @@ export const useCollectionStore = defineStore('collection', () => {
   return {
     items,
     loading,
-    savingCardId,
+    savingCardUuid,
     error,
     totalCards,
     fetchCollection,
     addCard,
+    updateItem,
     removeItem,
   };
 });

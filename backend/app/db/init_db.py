@@ -2,46 +2,46 @@ from sqlalchemy import select
 
 from app.db.base import Base
 from app.db.session import SessionLocal, engine
-from app.models import Card, MODELS
+from app.models import Card, Collection, Deck, MODELS
 
 DEV_CARDS = [
     {
-        "scryfall_id": "00000000-0000-0000-0000-000000000001",
+        "card_uuid": "00000000-0000-0000-0000-000000000001",
         "name": "Lightning Bolt",
         "mana_cost": "{R}",
         "type_line": "Instant",
         "oracle_text": "Lightning Bolt deals 3 damage to any target.",
     },
     {
-        "scryfall_id": "00000000-0000-0000-0000-000000000002",
+        "card_uuid": "00000000-0000-0000-0000-000000000002",
         "name": "Counterspell",
         "mana_cost": "{U}{U}",
         "type_line": "Instant",
         "oracle_text": "Counter target spell.",
     },
     {
-        "scryfall_id": "00000000-0000-0000-0000-000000000003",
+        "card_uuid": "00000000-0000-0000-0000-000000000003",
         "name": "Sol Ring",
         "mana_cost": "{1}",
         "type_line": "Artifact",
         "oracle_text": "{T}: Add {C}{C}.",
     },
     {
-        "scryfall_id": "00000000-0000-0000-0000-000000000004",
+        "card_uuid": "00000000-0000-0000-0000-000000000004",
         "name": "Swords to Plowshares",
         "mana_cost": "{W}",
         "type_line": "Instant",
         "oracle_text": "Exile target creature. Its controller gains life equal to its power.",
     },
     {
-        "scryfall_id": "00000000-0000-0000-0000-000000000005",
+        "card_uuid": "00000000-0000-0000-0000-000000000005",
         "name": "Llanowar Elves",
         "mana_cost": "{G}",
         "type_line": "Creature - Elf Druid",
         "oracle_text": "{T}: Add {G}.",
     },
     {
-        "scryfall_id": "00000000-0000-0000-0000-000000000006",
+        "card_uuid": "00000000-0000-0000-0000-000000000006",
         "name": "Demonic Tutor",
         "mana_cost": "{1}{B}",
         "type_line": "Sorcery",
@@ -59,4 +59,18 @@ def init_db() -> None:
             return
 
         db.add_all(Card(**card_data) for card_data in DEV_CARDS)
+        default_collection = Collection(name="My collection", is_default=True)
+        wishlist_collection = Collection(name="Wishlist", is_wishlist=True)
+        db.add_all(
+            [
+                default_collection,
+                wishlist_collection,
+                Deck(name="Default deck"),
+                Deck(
+                    name="Wish deck",
+                    is_wishlist=True,
+                    wishlist_collection=wishlist_collection,
+                ),
+            ]
+        )
         db.commit()
