@@ -54,3 +54,11 @@ class CollectionItem(Base):
     collection: Mapped[Collection] = relationship(back_populates="items")
     card: Mapped["Card"] = relationship(back_populates="collection_items")
     deck_items: Mapped[list["DeckItem"]] = relationship(back_populates="collection_item")
+
+    @property
+    def allocated_quantity(self) -> int:
+        return sum(deck_item.quantity for deck_item in self.deck_items)
+
+    @property
+    def available_quantity(self) -> int:
+        return self.quantity - self.allocated_quantity

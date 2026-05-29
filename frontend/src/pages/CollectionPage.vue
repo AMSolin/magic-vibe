@@ -1,26 +1,54 @@
 <script setup lang="ts">
-import { onMounted } from 'vue';
+import { onMounted, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import Button from 'primevue/button';
 import DataTable from 'primevue/datatable';
 import Column from 'primevue/column';
 import InputNumber from 'primevue/inputnumber';
+import Select from 'primevue/select';
 
 import { useCollectionStore } from '@/stores/collection';
 
 const collectionStore = useCollectionStore();
-const { items, loading, error, totalCards } = storeToRefs(collectionStore);
+const {
+  collections,
+  selectedCollectionId,
+  selectedCollection,
+  items,
+  collectionsLoading,
+  loading,
+  error,
+  totalCards,
+} = storeToRefs(collectionStore);
 
 onMounted(async () => {
-  await collectionStore.fetchCollection();
+  await collectionStore.fetchCollections();
+  await collectionStore.fetchCollectionItems();
+});
+
+watch(selectedCollectionId, async () => {
+  await collectionStore.fetchCollectionItems();
 });
 </script>
 
 <template>
   <section class="page">
     <div class="page-header">
-      <h1>Collection</h1>
-      <span class="summary">{{ totalCards }} cards</span>
+      <div>
+        <h1>Collection</h1>
+        <span class="summary">
+          {{ selectedCollection?.name ?? 'No collection' }} · {{ totalCards }} cards
+        </span>
+      </div>
+      <Select
+        v-model="selectedCollectionId"
+        class="collection-select"
+        :options="collections"
+        option-label="name"
+        option-value="id"
+        :loading="collectionsLoading"
+        aria-label="Collection"
+      />
     </div>
 
     <p v-if="error" class="empty-state">{{ error }}</p>

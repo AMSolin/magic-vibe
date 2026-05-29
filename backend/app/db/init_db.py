@@ -65,7 +65,7 @@ def init_db() -> None:
             [
                 default_collection,
                 wishlist_collection,
-                Deck(name="Default deck"),
+                Deck(name="Default deck", is_default=True),
                 Deck(
                     name="Wish deck",
                     is_wishlist=True,

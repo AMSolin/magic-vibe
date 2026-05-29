@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch } from 'vue';
+import { onMounted, ref, watch } from 'vue';
 import { storeToRefs } from 'pinia';
 import Button from 'primevue/button';
 import Card from 'primevue/card';
@@ -14,7 +14,8 @@ import { useCollectionStore } from '@/stores/collection';
 const cardsStore = useCardsStore();
 const collectionStore = useCollectionStore();
 const { search, cards, loading, error } = storeToRefs(cardsStore);
-const { savingCardUuid } = storeToRefs(collectionStore);
+const { collections, selectedCollectionId, collectionsLoading, savingCardUuid } =
+  storeToRefs(collectionStore);
 const conditions = ['NM', 'SP', 'MP', 'HP', 'D'];
 const languages = ['English', 'Russian', 'Japanese'];
 const addCondition = ref('NM');
@@ -26,6 +27,10 @@ watch(
   (value) => cardsStore.runSearch(value),
   { immediate: true },
 );
+
+onMounted(async () => {
+  await collectionStore.fetchCollections();
+});
 </script>
 
 <template>
@@ -36,6 +41,16 @@ watch(
     </div>
 
     <div class="add-defaults">
+      <Select
+        v-model="selectedCollectionId"
+        class="collection-select"
+        :options="collections"
+        option-label="name"
+        option-value="id"
+        size="small"
+        :loading="collectionsLoading"
+        aria-label="Collection"
+      />
       <Select v-model="addCondition" :options="conditions" size="small" aria-label="Condition" />
       <Select v-model="addLanguage" :options="languages" size="small" aria-label="Language" />
       <label class="checkbox-label">

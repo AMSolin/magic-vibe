@@ -18,6 +18,7 @@ class Deck(Base):
     name: Mapped[str] = mapped_column(String(255))
     owner_id: Mapped[int] = mapped_column(default=1)
     note: Mapped[str | None] = mapped_column(String(1024))
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     is_wishlist: Mapped[bool] = mapped_column(Boolean, default=False)
     wishlist_collection_id: Mapped[int | None] = mapped_column(ForeignKey("collections.id"))
     created_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now())

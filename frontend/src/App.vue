@@ -4,6 +4,7 @@ import Menubar from 'primevue/menubar';
 const items = [
   { label: 'Collection', icon: 'pi pi-box', route: '/' },
   { label: 'Cards', icon: 'pi pi-search', route: '/cards' },
+  { label: 'Decks', icon: 'pi pi-book', route: '/decks' },
 ];
 </script>
 
@@ -28,4 +29,3 @@ const items = [
     </main>
   </div>
 </template>
-

@@ -11,8 +11,19 @@ export type Card = {
   image_normal: string | null;
 };
 
+export type Collection = {
+  id: number;
+  name: string;
+  owner_id: number;
+  note: string | null;
+  is_default: boolean;
+  is_wishlist: boolean;
+  created_at: string;
+};
+
 export type CollectionItem = {
   id: number;
+  collection_id: number;
   card_uuid: string;
   card: Card;
   quantity: number;
@@ -20,6 +31,8 @@ export type CollectionItem = {
   foil: boolean;
   language: string;
   created_at: string;
+  allocated_quantity: number;
+  available_quantity: number;
 };
 
 export type CollectionItemCreate = {
@@ -35,6 +48,64 @@ export type CollectionItemUpdate = {
   condition_code?: string;
   foil?: boolean;
   language?: string;
+};
+
+export type Deck = {
+  id: number;
+  name: string;
+  owner_id: number;
+  note: string | null;
+  is_default: boolean;
+  is_wishlist: boolean;
+  wishlist_collection_id: number | null;
+  created_at: string;
+};
+
+export type DeckCreate = {
+  name: string;
+  owner_id?: number;
+  note?: string | null;
+  is_default?: boolean;
+  is_wishlist?: boolean;
+  wishlist_collection_id?: number | null;
+};
+
+export type DeckUpdate = {
+  name?: string;
+  owner_id?: number;
+  note?: string | null;
+  is_default?: boolean;
+  is_wishlist?: boolean;
+  wishlist_collection_id?: number | null;
+  created_at?: string;
+};
+
+export type DeckItem = {
+  id: number;
+  deck_id: number;
+  collection_item_id: number;
+  quantity: number;
+  section: string;
+  is_commander: boolean;
+  collection_item: CollectionItem;
+};
+
+export type DeckItemCreate = {
+  collection_item_id: number;
+  quantity?: number;
+  section?: string;
+  is_commander?: boolean;
+};
+
+export type DeckItemUpdate = {
+  quantity?: number;
+  section?: string;
+  is_commander?: boolean;
+};
+
+export type DeckItemMove = {
+  section: string;
+  quantity?: number;
 };
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -63,29 +134,100 @@ export function searchCards(search: string): Promise<Card[]> {
   return request<Card[]>(`/api/cards?${query.toString()}`);
 }
 
-export function listCollection(): Promise<CollectionItem[]> {
-  return request<CollectionItem[]>('/api/collection');
+export function listCollections(): Promise<Collection[]> {
+  return request<Collection[]>('/api/collections');
 }
 
-export function addCollectionItem(payload: CollectionItemCreate): Promise<CollectionItem> {
-  return request<CollectionItem>('/api/collection', {
+export function listCollectionItems(collectionId: number): Promise<CollectionItem[]> {
+  return request<CollectionItem[]>(`/api/collections/${collectionId}/items`);
+}
+
+export function addCollectionItem(
+  collectionId: number,
+  payload: CollectionItemCreate,
+): Promise<CollectionItem> {
+  return request<CollectionItem>(`/api/collections/${collectionId}/items`, {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 }
 
 export function updateCollectionItem(
+  collectionId: number,
   itemId: number,
   payload: CollectionItemUpdate,
 ): Promise<CollectionItem> {
-  return request<CollectionItem>(`/api/collection/${itemId}`, {
+  return request<CollectionItem>(`/api/collections/${collectionId}/items/${itemId}`, {
     method: 'PATCH',
     body: JSON.stringify(payload),
   });
 }
 
-export function deleteCollectionItem(itemId: number): Promise<void> {
-  return request<void>(`/api/collection/${itemId}`, {
+export function deleteCollectionItem(collectionId: number, itemId: number): Promise<void> {
+  return request<void>(`/api/collections/${collectionId}/items/${itemId}`, {
     method: 'DELETE',
+  });
+}
+
+export function listDecks(): Promise<Deck[]> {
+  return request<Deck[]>('/api/decks');
+}
+
+export function createDeck(payload: DeckCreate): Promise<Deck> {
+  return request<Deck>('/api/decks', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateDeck(deckId: number, payload: DeckUpdate): Promise<Deck> {
+  return request<Deck>(`/api/decks/${deckId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteDeck(deckId: number): Promise<void> {
+  return request<void>(`/api/decks/${deckId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function listDeckItems(deckId: number): Promise<DeckItem[]> {
+  return request<DeckItem[]>(`/api/decks/${deckId}/items`);
+}
+
+export function addDeckItem(deckId: number, payload: DeckItemCreate): Promise<DeckItem> {
+  return request<DeckItem>(`/api/decks/${deckId}/items`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateDeckItem(
+  deckId: number,
+  itemId: number,
+  payload: DeckItemUpdate,
+): Promise<DeckItem> {
+  return request<DeckItem>(`/api/decks/${deckId}/items/${itemId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteDeckItem(deckId: number, itemId: number): Promise<void> {
+  return request<void>(`/api/decks/${deckId}/items/${itemId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function moveDeckItem(
+  deckId: number,
+  itemId: number,
+  payload: DeckItemMove,
+): Promise<DeckItem> {
+  return request<DeckItem>(`/api/decks/${deckId}/items/${itemId}/move`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
   });
 }
