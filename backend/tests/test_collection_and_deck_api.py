@@ -266,3 +266,121 @@ def test_deck_item_commander_flag_can_be_updated(client: TestClient) -> None:
 
     assert response.status_code == 200
     assert response.json()["is_commander"] is True
+
+
+def test_collection_management_updates_metadata_and_reassigns_primary_collection(
+    client: TestClient,
+) -> None:
+    create_response = client.post(
+        "/api/collections",
+        json={"name": "Trade binder", "note": "First note", "is_default": True},
+    )
+
+    assert create_response.status_code == 201
+    created_collection = create_response.json()
+    assert created_collection["is_default"] is True
+
+    collections_after_create = client.get("/api/collections").json()
+    default_collection = next(
+        collection
+        for collection in collections_after_create
+        if collection["name"] == "My collection"
+    )
+    assert default_collection["is_default"] is False
+
+    update_response = client.patch(
+        f"/api/collections/{created_collection['id']}",
+        json={"name": "Renamed binder", "owner_id": 2, "note": "Updated note"},
+    )
+
+    assert update_response.status_code == 200
+    assert update_response.json()["name"] == "Renamed binder"
+    assert update_response.json()["owner_id"] == 2
+    assert update_response.json()["note"] == "Updated note"
+
+    collections_after_update = client.get("/api/collections").json()
+    default_collection = next(
+        collection
+        for collection in collections_after_update
+        if collection["name"] == "My collection"
+    )
+    assert default_collection["is_default"] is True
+
+    delete_response = client.delete(f"/api/collections/{created_collection['id']}")
+
+    assert delete_response.status_code == 204
+
+
+def test_wishlist_collection_cannot_be_primary(client: TestClient) -> None:
+    response = client.patch("/api/collections/2", json={"is_default": True})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Wishlist collection cannot be primary"
+
+
+def test_linked_wishlist_collection_cannot_be_deleted(client: TestClient) -> None:
+    response = client.delete("/api/collections/2")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Collection is linked to a wish deck"
+
+
+def test_collection_with_allocated_item_cannot_be_deleted(client: TestClient) -> None:
+    regular_item = _seed_regular_collection_item(client)
+    assert (
+        client.post(
+            "/api/decks/1/items",
+            json={"collection_item_id": regular_item["id"]},
+        ).status_code
+        == 201
+    )
+
+    response = client.delete("/api/collections/1")
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Collection contains cards allocated to a deck"
+
+
+def test_collection_item_move_merges_matching_identity(client: TestClient) -> None:
+    source_item = _seed_regular_collection_item(client, quantity=2)
+    target_collection = client.post("/api/collections", json={"name": "Trade binder"}).json()
+    target_item = client.post(
+        f"/api/collections/{target_collection['id']}/items",
+        json={
+            "card_uuid": source_item["card_uuid"],
+            "quantity": 3,
+            "condition_code": source_item["condition_code"],
+            "foil": source_item["foil"],
+            "language": source_item["language"],
+        },
+    ).json()
+
+    response = client.post(
+        f"/api/collections/1/items/{source_item['id']}/move",
+        json={"collection_id": target_collection["id"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == target_item["id"]
+    assert response.json()["quantity"] == 5
+    assert client.get("/api/collections/1/items").json() == []
+
+
+def test_allocated_collection_item_cannot_be_moved(client: TestClient) -> None:
+    regular_item = _seed_regular_collection_item(client)
+    target_collection = client.post("/api/collections", json={"name": "Trade binder"}).json()
+    assert (
+        client.post(
+            "/api/decks/1/items",
+            json={"collection_item_id": regular_item["id"]},
+        ).status_code
+        == 201
+    )
+
+    response = client.post(
+        f"/api/collections/1/items/{regular_item['id']}/move",
+        json={"collection_id": target_collection["id"]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Allocated collection item cannot be moved"

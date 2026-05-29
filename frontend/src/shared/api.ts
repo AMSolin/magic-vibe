@@ -21,6 +21,22 @@ export type Collection = {
   created_at: string;
 };
 
+export type CollectionCreate = {
+  name: string;
+  note?: string | null;
+  is_default?: boolean;
+  is_wishlist?: boolean;
+};
+
+export type CollectionUpdate = {
+  name?: string;
+  owner_id?: number;
+  note?: string | null;
+  is_default?: boolean;
+  is_wishlist?: boolean;
+  created_at?: string;
+};
+
 export type CollectionItem = {
   id: number;
   collection_id: number;
@@ -48,6 +64,10 @@ export type CollectionItemUpdate = {
   condition_code?: string;
   foil?: boolean;
   language?: string;
+};
+
+export type CollectionItemMove = {
+  collection_id: number;
 };
 
 export type Deck = {
@@ -138,6 +158,29 @@ export function listCollections(): Promise<Collection[]> {
   return request<Collection[]>('/api/collections');
 }
 
+export function createCollection(payload: CollectionCreate): Promise<Collection> {
+  return request<Collection>('/api/collections', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateCollection(
+  collectionId: number,
+  payload: CollectionUpdate,
+): Promise<Collection> {
+  return request<Collection>(`/api/collections/${collectionId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteCollection(collectionId: number): Promise<void> {
+  return request<void>(`/api/collections/${collectionId}`, {
+    method: 'DELETE',
+  });
+}
+
 export function listCollectionItems(collectionId: number): Promise<CollectionItem[]> {
   return request<CollectionItem[]>(`/api/collections/${collectionId}/items`);
 }
@@ -166,6 +209,17 @@ export function updateCollectionItem(
 export function deleteCollectionItem(collectionId: number, itemId: number): Promise<void> {
   return request<void>(`/api/collections/${collectionId}/items/${itemId}`, {
     method: 'DELETE',
+  });
+}
+
+export function moveCollectionItem(
+  collectionId: number,
+  itemId: number,
+  payload: CollectionItemMove,
+): Promise<CollectionItem> {
+  return request<CollectionItem>(`/api/collections/${collectionId}/items/${itemId}/move`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
   });
 }
 

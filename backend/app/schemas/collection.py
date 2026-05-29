@@ -26,9 +26,11 @@ class CollectionCreate(BaseModel):
 
 class CollectionUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
+    owner_id: int | None = Field(default=None, ge=1)
     note: str | None = None
     is_default: bool | None = None
     is_wishlist: bool | None = None
+    created_at: datetime | None = None
 
 
 class CollectionItemCreate(BaseModel):
@@ -44,6 +46,10 @@ class CollectionItemUpdate(BaseModel):
     condition_code: str | None = None
     foil: bool | None = None
     language: str | None = None
+
+
+class CollectionItemMove(BaseModel):
+    collection_id: int
 
 
 class CollectionItemRead(BaseModel):

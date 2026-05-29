@@ -4,12 +4,19 @@ import { computed, ref, watch } from 'vue';
 import {
   addCollectionItem,
   type Collection,
+  type CollectionCreate,
   type CollectionItem,
   type CollectionItemCreate,
+  type CollectionItemMove,
   type CollectionItemUpdate,
+  type CollectionUpdate,
+  createCollection,
+  deleteCollection,
   deleteCollectionItem,
   listCollectionItems,
   listCollections,
+  moveCollectionItem,
+  updateCollection,
   updateCollectionItem,
 } from '@/shared/api';
 
@@ -30,6 +37,7 @@ export const useCollectionStore = defineStore('collection', () => {
   const selectedCollectionId = ref<number | null>(readStoredCollectionId());
   const items = ref<CollectionItem[]>([]);
   const collectionsLoading = ref(false);
+  const savingCollection = ref(false);
   const loading = ref(false);
   const savingCardUuid = ref<string | null>(null);
   const error = ref<string | null>(null);
@@ -79,6 +87,71 @@ export const useCollectionStore = defineStore('collection', () => {
       error.value = 'Collections are unavailable';
     } finally {
       collectionsLoading.value = false;
+    }
+  }
+
+  async function createNewCollection(payload: CollectionCreate): Promise<boolean> {
+    savingCollection.value = true;
+    error.value = null;
+    try {
+      const collection = await createCollection(payload);
+      collections.value = [...collections.value, collection];
+      selectedCollectionId.value = collection.id;
+      return true;
+    } catch {
+      error.value = 'Could not create collection';
+      return false;
+    } finally {
+      savingCollection.value = false;
+    }
+  }
+
+  async function updateSelectedCollection(payload: CollectionUpdate): Promise<boolean> {
+    if (selectedCollectionId.value === null) {
+      error.value = 'Select a collection first';
+      return false;
+    }
+
+    savingCollection.value = true;
+    error.value = null;
+    try {
+      const updatedCollection = await updateCollection(selectedCollectionId.value, payload);
+      const collectionIndex = collections.value.findIndex(
+        (collection) => collection.id === updatedCollection.id,
+      );
+      if (collectionIndex !== -1) {
+        collections.value.splice(collectionIndex, 1, updatedCollection);
+      }
+      return true;
+    } catch {
+      error.value = 'Could not update collection';
+      return false;
+    } finally {
+      savingCollection.value = false;
+    }
+  }
+
+  async function removeSelectedCollection(): Promise<boolean> {
+    if (selectedCollectionId.value === null) {
+      error.value = 'Select a collection first';
+      return false;
+    }
+
+    savingCollection.value = true;
+    error.value = null;
+    const removedCollectionId = selectedCollectionId.value;
+    try {
+      await deleteCollection(removedCollectionId);
+      collections.value = collections.value.filter(
+        (collection) => collection.id !== removedCollectionId,
+      );
+      setSelectedCollection(chooseDefaultCollection(collections.value));
+      return true;
+    } catch {
+      error.value = 'Could not delete collection';
+      return false;
+    } finally {
+      savingCollection.value = false;
     }
   }
 
@@ -169,21 +242,43 @@ export const useCollectionStore = defineStore('collection', () => {
     }
   }
 
+  async function moveItem(itemId: number, payload: CollectionItemMove): Promise<boolean> {
+    if (selectedCollectionId.value === null) {
+      error.value = 'Select a collection first';
+      return false;
+    }
+
+    error.value = null;
+    try {
+      await moveCollectionItem(selectedCollectionId.value, itemId, payload);
+      items.value = items.value.filter((item) => item.id !== itemId);
+      return true;
+    } catch {
+      error.value = 'Could not move card';
+      return false;
+    }
+  }
+
   return {
     collections,
     selectedCollectionId,
     selectedCollection,
     items,
     collectionsLoading,
+    savingCollection,
     loading,
     savingCardUuid,
     error,
     totalCards,
     fetchCollections,
     fetchCollectionItems,
+    createNewCollection,
+    updateSelectedCollection,
+    removeSelectedCollection,
     setSelectedCollection,
     addCard,
     updateItem,
     removeItem,
+    moveItem,
   };
 });
