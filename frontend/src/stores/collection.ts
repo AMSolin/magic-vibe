@@ -13,6 +13,7 @@ import {
   createCollection,
   deleteCollection,
   deleteCollectionItem,
+  getApiErrorMessage,
   listCollectionItems,
   listCollections,
   moveCollectionItem,
@@ -83,8 +84,8 @@ export const useCollectionStore = defineStore('collection', () => {
       if (!selectedExists) {
         setSelectedCollection(chooseDefaultCollection(fetchedCollections));
       }
-    } catch {
-      error.value = 'Collections are unavailable';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Collections are unavailable');
     } finally {
       collectionsLoading.value = false;
     }
@@ -98,8 +99,8 @@ export const useCollectionStore = defineStore('collection', () => {
       collections.value = [...collections.value, collection];
       selectedCollectionId.value = collection.id;
       return true;
-    } catch {
-      error.value = 'Could not create collection';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Could not create collection');
       return false;
     } finally {
       savingCollection.value = false;
@@ -123,8 +124,8 @@ export const useCollectionStore = defineStore('collection', () => {
         collections.value.splice(collectionIndex, 1, updatedCollection);
       }
       return true;
-    } catch {
-      error.value = 'Could not update collection';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Could not update collection');
       return false;
     } finally {
       savingCollection.value = false;
@@ -147,8 +148,8 @@ export const useCollectionStore = defineStore('collection', () => {
       );
       setSelectedCollection(chooseDefaultCollection(collections.value));
       return true;
-    } catch {
-      error.value = 'Could not delete collection';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Could not delete collection');
       return false;
     } finally {
       savingCollection.value = false;
@@ -169,8 +170,8 @@ export const useCollectionStore = defineStore('collection', () => {
     error.value = null;
     try {
       items.value = await listCollectionItems(selectedCollectionId.value);
-    } catch {
-      error.value = 'Collection is unavailable';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Collection is unavailable');
     } finally {
       loading.value = false;
     }
@@ -196,8 +197,8 @@ export const useCollectionStore = defineStore('collection', () => {
       } else {
         items.value.splice(existingIndex, 1, item);
       }
-    } catch {
-      error.value = 'Could not add card';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Could not add card');
     } finally {
       savingCardUuid.value = null;
     }
@@ -218,9 +219,9 @@ export const useCollectionStore = defineStore('collection', () => {
       if (itemIndex !== -1) {
         items.value.splice(itemIndex, 1, item);
       }
-    } catch {
+    } catch (caughtError) {
       items.value = previousItems;
-      error.value = 'Could not update card';
+      error.value = getApiErrorMessage(caughtError, 'Could not update card');
     }
   }
 
@@ -236,9 +237,9 @@ export const useCollectionStore = defineStore('collection', () => {
 
     try {
       await deleteCollectionItem(selectedCollectionId.value, itemId);
-    } catch {
+    } catch (caughtError) {
       items.value = previousItems;
-      error.value = 'Could not remove card';
+      error.value = getApiErrorMessage(caughtError, 'Could not remove card');
     }
   }
 
@@ -253,8 +254,8 @@ export const useCollectionStore = defineStore('collection', () => {
       await moveCollectionItem(selectedCollectionId.value, itemId, payload);
       items.value = items.value.filter((item) => item.id !== itemId);
       return true;
-    } catch {
-      error.value = 'Could not move card';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Could not move card');
       return false;
     }
   }

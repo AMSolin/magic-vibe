@@ -128,6 +128,45 @@ export type DeckItemMove = {
   quantity?: number;
 };
 
+type ApiErrorBody = {
+  detail?: unknown;
+};
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    public readonly status: number,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+function formatApiErrorDetail(detail: unknown): string | null {
+  if (typeof detail === 'string') {
+    return detail;
+  }
+
+  if (Array.isArray(detail)) {
+    const messages = detail
+      .map((item) => {
+        if (typeof item === 'object' && item !== null && 'msg' in item) {
+          return String(item.msg);
+        }
+        return null;
+      })
+      .filter((message): message is string => message !== null);
+
+    return messages.length > 0 ? messages.join('; ') : null;
+  }
+
+  return null;
+}
+
+export function getApiErrorMessage(error: unknown, fallback: string): string {
+  return error instanceof ApiError ? error.message : fallback;
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     headers: { 'Content-Type': 'application/json', ...init?.headers },
@@ -135,7 +174,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   });
 
   if (!response.ok) {
-    throw new Error(`API request failed: ${response.status}`);
+    let detail: string | null = null;
+    try {
+      const body = (await response.json()) as ApiErrorBody;
+      detail = formatApiErrorDetail(body.detail);
+    } catch {
+      // Fall back to the HTTP status when the response body is not JSON.
+    }
+
+    throw new ApiError(detail ?? `API request failed: ${response.status}`, response.status);
   }
 
   if (response.status === 204) {

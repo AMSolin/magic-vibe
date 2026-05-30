@@ -1,7 +1,7 @@
 import { defineStore } from 'pinia';
 import { ref } from 'vue';
 
-import { type Card, searchCards } from '@/shared/api';
+import { type Card, getApiErrorMessage, searchCards } from '@/shared/api';
 
 export const useCardsStore = defineStore('cards', () => {
   const search = ref('');
@@ -29,9 +29,9 @@ export const useCardsStore = defineStore('cards', () => {
       if (requestId === currentRequest) {
         cards.value = result;
       }
-    } catch {
+    } catch (caughtError) {
       if (requestId === currentRequest) {
-        error.value = 'Search is unavailable';
+        error.value = getApiErrorMessage(caughtError, 'Search is unavailable');
       }
     } finally {
       if (requestId === currentRequest) {

@@ -13,6 +13,7 @@ import {
   type DeckUpdate,
   deleteDeck,
   deleteDeckItem,
+  getApiErrorMessage,
   listDeckItems,
   listDecks,
   moveDeckItem,
@@ -65,8 +66,8 @@ export const useDecksStore = defineStore('decks', () => {
       if (!fetchedDecks.some((deck) => deck.id === selectedDeckId.value)) {
         selectedDeckId.value = fetchedDecks[0]?.id ?? null;
       }
-    } catch {
-      error.value = 'Decks are unavailable';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Decks are unavailable');
     } finally {
       decksLoading.value = false;
     }
@@ -80,8 +81,8 @@ export const useDecksStore = defineStore('decks', () => {
       decks.value = [...decks.value, deck];
       selectedDeckId.value = deck.id;
       return true;
-    } catch {
-      error.value = 'Could not create deck';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Could not create deck');
       return false;
     } finally {
       savingDeck.value = false;
@@ -103,8 +104,8 @@ export const useDecksStore = defineStore('decks', () => {
         decks.value.splice(deckIndex, 1, updatedDeck);
       }
       return true;
-    } catch {
-      error.value = 'Could not update deck';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Could not update deck');
       return false;
     } finally {
       savingDeck.value = false;
@@ -125,8 +126,8 @@ export const useDecksStore = defineStore('decks', () => {
       decks.value = decks.value.filter((deck) => deck.id !== removedDeckId);
       selectedDeckId.value = decks.value[0]?.id ?? null;
       return true;
-    } catch {
-      error.value = 'Could not delete deck';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Could not delete deck');
       return false;
     } finally {
       savingDeck.value = false;
@@ -147,8 +148,8 @@ export const useDecksStore = defineStore('decks', () => {
     error.value = null;
     try {
       items.value = await listDeckItems(selectedDeckId.value);
-    } catch {
-      error.value = 'Deck is unavailable';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Deck is unavailable');
     } finally {
       itemsLoading.value = false;
     }
@@ -171,8 +172,8 @@ export const useDecksStore = defineStore('decks', () => {
         items.value.splice(existingIndex, 1, item);
       }
       return true;
-    } catch {
-      error.value = 'Could not add card to deck';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Could not add card to deck');
       return false;
     } finally {
       savingCollectionItemId.value = null;
@@ -193,8 +194,8 @@ export const useDecksStore = defineStore('decks', () => {
         items.value.splice(itemIndex, 1, item);
       }
       return true;
-    } catch {
-      error.value = 'Could not update deck card';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Could not update deck card');
       return false;
     }
   }
@@ -210,8 +211,8 @@ export const useDecksStore = defineStore('decks', () => {
       await deleteDeckItem(selectedDeckId.value, itemId);
       items.value = items.value.filter((item) => item.id !== itemId);
       return true;
-    } catch {
-      error.value = 'Could not remove card from deck';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Could not remove card from deck');
       return false;
     }
   }
@@ -227,8 +228,8 @@ export const useDecksStore = defineStore('decks', () => {
       await moveDeckItem(selectedDeckId.value, itemId, payload);
       await fetchDeckItems();
       return true;
-    } catch {
-      error.value = 'Could not move deck card';
+    } catch (caughtError) {
+      error.value = getApiErrorMessage(caughtError, 'Could not move deck card');
       return false;
     }
   }
