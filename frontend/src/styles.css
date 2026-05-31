@@ -56,6 +56,11 @@ a {
   line-height: 1.2;
 }
 
+.page-description {
+  margin: 6px 0 0;
+  color: #6b7280;
+}
+
 .search-input {
   width: min(100%, 360px);
 }
@@ -224,4 +229,10 @@ a {
 
 .dialog-fields {
   min-width: 0;
+}
+
+.technical-value {
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.875rem;
 }

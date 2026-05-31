@@ -5,6 +5,7 @@ const items = [
   { label: 'Collection', icon: 'pi pi-box', route: '/' },
   { label: 'Cards', icon: 'pi pi-search', route: '/cards' },
   { label: 'Decks', icon: 'pi pi-book', route: '/decks' },
+  { label: 'Admin', icon: 'pi pi-cog', route: '/admin' },
 ];
 </script>
 

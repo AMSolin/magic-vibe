@@ -128,6 +128,24 @@ export type DeckItemMove = {
   quantity?: number;
 };
 
+export type CatalogImport = {
+  id: number;
+  source: string;
+  source_updated_at: number | null;
+  started_at: number;
+  finished_at: number | null;
+  status: string;
+  error_message: string | null;
+  catalog_row_count: number | null;
+  source_file_size: number | null;
+  source_sha256: string | null;
+};
+
+export type CatalogStatus = {
+  latest_import: CatalogImport | null;
+  latest_successful_import: CatalogImport | null;
+};
+
 type ApiErrorBody = {
   detail?: unknown;
 };
@@ -330,5 +348,21 @@ export function moveDeckItem(
   return request<DeckItem>(`/api/decks/${deckId}/items/${itemId}/move`, {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export function getCatalogStatus(): Promise<CatalogStatus> {
+  return request<CatalogStatus>('/api/admin/catalog');
+}
+
+export function startCatalogUpdate(): Promise<CatalogImport> {
+  return request<CatalogImport>('/api/admin/catalog/update', {
+    method: 'POST',
+  });
+}
+
+export function startCatalogRebuild(): Promise<CatalogImport> {
+  return request<CatalogImport>('/api/admin/catalog/rebuild', {
+    method: 'POST',
   });
 }
