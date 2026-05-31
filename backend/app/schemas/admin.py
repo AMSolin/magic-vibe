@@ -19,3 +19,9 @@ class CatalogImportRead(BaseModel):
 class CatalogStatusRead(BaseModel):
     latest_import: CatalogImportRead | None
     latest_successful_import: CatalogImportRead | None
+
+
+class UserDataStatusRead(BaseModel):
+    exists: bool
+    file_size: int | None
+    modified_at: int | None

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue';
 import Button from 'primevue/button';
+import Dialog from 'primevue/dialog';
 import Message from 'primevue/message';
 import ProgressSpinner from 'primevue/progressspinner';
 
@@ -8,14 +9,21 @@ import {
   type CatalogImport,
   getApiErrorMessage,
   getCatalogStatus,
+  getUserDataStatus,
+  recreateUserData,
   startCatalogRebuild,
   startCatalogUpdate,
   type CatalogStatus,
+  type UserDataStatus,
 } from '@/shared/api';
 
 const status = ref<CatalogStatus | null>(null);
+const userDataStatus = ref<UserDataStatus | null>(null);
 const loading = ref(false);
+const recreatingUserData = ref(false);
+const userDataDialogVisible = ref(false);
 const error = ref<string | null>(null);
+const refreshError = ref<string | null>(null);
 
 const latestImport = computed(() => status.value?.latest_import ?? null);
 const installedCatalog = computed(() => status.value?.latest_successful_import ?? null);
@@ -28,6 +36,9 @@ const rebuildRunning = computed(
     latestImport.value?.source === 'Local MTGJSON AllPrintings.sqlite',
 );
 const updateRunning = computed(() => catalogOperationRunning.value && !rebuildRunning.value);
+const userDataButtonLabel = computed(() =>
+  userDataStatus.value?.exists ? 'Recreate user database' : 'Initialize user database',
+);
 
 let statusTimer: number | undefined;
 
@@ -73,15 +84,37 @@ async function loadStatus(showLoading = true): Promise<void> {
   if (showLoading) {
     loading.value = true;
   }
-  error.value = null;
   try {
-    status.value = await getCatalogStatus();
+    [status.value, userDataStatus.value] = await Promise.all([
+      getCatalogStatus(),
+      getUserDataStatus(),
+    ]);
+    error.value = null;
+    refreshError.value = null;
   } catch (caughtError) {
-    error.value = getApiErrorMessage(caughtError, 'Catalog status is unavailable');
+    const message = getApiErrorMessage(caughtError, 'Application status is unavailable');
+    if (status.value === null && userDataStatus.value === null) {
+      error.value = message;
+    } else {
+      refreshError.value = `${message}. Showing the last known status.`;
+    }
   } finally {
     if (showLoading) {
       loading.value = false;
     }
+  }
+}
+
+async function initializeUserData(): Promise<void> {
+  recreatingUserData.value = true;
+  error.value = null;
+  try {
+    userDataStatus.value = await recreateUserData();
+    userDataDialogVisible.value = false;
+  } catch (caughtError) {
+    error.value = getApiErrorMessage(caughtError, 'User database could not be initialized');
+  } finally {
+    recreatingUserData.value = false;
   }
 }
 
@@ -139,24 +172,9 @@ onUnmounted(() => {
       <div class="header-actions">
         <Button
           icon="pi pi-refresh"
-          label="Refresh status"
+          label="Refresh all statuses"
           severity="secondary"
           @click="() => loadStatus()"
-        />
-        <Button
-          icon="pi pi-database"
-          label="Rebuild catalog"
-          severity="secondary"
-          :disabled="catalogOperationRunning"
-          :loading="rebuildRunning"
-          @click="rebuildCatalog"
-        />
-        <Button
-          icon="pi pi-download"
-          label="Update catalog"
-          :disabled="catalogOperationRunning"
-          :loading="updateRunning"
-          @click="updateCatalog"
         />
       </div>
     </div>
@@ -165,18 +183,55 @@ onUnmounted(() => {
     <Message v-else-if="error" severity="error">{{ error }}</Message>
 
     <template v-else>
-      <Message severity="info">
-        Update downloads the latest MTGJSON source and rebuilds the catalog. Rebuild uses the
-        previously downloaded local source without another large download.
-      </Message>
+      <Message v-if="refreshError" severity="warn">{{ refreshError }}</Message>
 
       <section class="tool-panel">
         <div class="section-header">
-          <h2>Installed Catalog</h2>
-          <Message :severity="statusSeverity(installedCatalog)" size="small">
-            {{ installedCatalog?.status ?? 'Not installed' }}
+          <h2>User Database</h2>
+          <Message :severity="userDataStatus?.exists ? 'success' : 'warn'" size="small">
+            {{ userDataStatus?.exists ? 'Initialized' : 'Not initialized' }}
           </Message>
         </div>
+
+        <div class="metadata-grid">
+          <div class="field">
+            <span>Database file</span>
+            <strong>backend/data/user_data.db</strong>
+          </div>
+          <div class="field">
+            <span>Last modified at</span>
+            <strong>{{ formatTimestamp(userDataStatus?.modified_at) }}</strong>
+          </div>
+          <div class="field">
+            <span>File size</span>
+            <strong>{{ formatFileSize(userDataStatus?.file_size) }}</strong>
+          </div>
+        </div>
+
+        <div class="panel-actions">
+          <Button
+            icon="pi pi-database"
+            :label="userDataButtonLabel"
+            severity="danger"
+            @click="userDataDialogVisible = true"
+          />
+        </div>
+      </section>
+
+      <section class="tool-panel">
+        <div class="section-header">
+          <h2>Catalog Database</h2>
+          <Message :severity="statusSeverity(installedCatalog)" size="small">
+            {{ installedCatalog ? 'Installed' : 'Not installed' }}
+          </Message>
+        </div>
+
+        <Message severity="info">
+          Update downloads the latest MTGJSON source and rebuilds the catalog. Rebuild uses the
+          previously downloaded local source without another large download.
+        </Message>
+
+        <h3>Installed Catalog</h3>
 
         <div class="metadata-grid">
           <div class="field">
@@ -204,11 +259,9 @@ onUnmounted(() => {
             <strong class="technical-value">{{ installedCatalog?.source_sha256 ?? 'Not available' }}</strong>
           </div>
         </div>
-      </section>
 
-      <section class="tool-panel">
-        <div class="section-header">
-          <h2>Latest Update Attempt</h2>
+        <div class="section-header subsection-header">
+          <h3>Latest Update Attempt</h3>
           <Message :severity="statusSeverity(latestImport)" size="small">
             {{ latestImport?.status ?? 'No attempts' }}
           </Message>
@@ -228,7 +281,49 @@ onUnmounted(() => {
             <strong>{{ latestImport?.error_message ?? 'None' }}</strong>
           </div>
         </div>
+
+        <div class="panel-actions">
+          <Button
+            icon="pi pi-database"
+            label="Rebuild catalog"
+            severity="secondary"
+            :disabled="catalogOperationRunning"
+            :loading="rebuildRunning"
+            @click="rebuildCatalog"
+          />
+          <Button
+            icon="pi pi-download"
+            label="Update catalog"
+            :disabled="catalogOperationRunning"
+            :loading="updateRunning"
+            @click="updateCatalog"
+          />
+        </div>
       </section>
     </template>
+
+    <Dialog
+      v-model:visible="userDataDialogVisible"
+      modal
+      :header="userDataButtonLabel"
+      class="admin-dialog"
+    >
+      <p v-if="userDataStatus?.exists">
+        Recreating the user database permanently deletes all user collections and decks.
+      </p>
+      <p v-else>
+        Initialize the user database with the default player, collections, decks, and card
+        conditions.
+      </p>
+      <div class="dialog-actions">
+        <Button label="Cancel" severity="secondary" text @click="userDataDialogVisible = false" />
+        <Button
+          :label="userDataButtonLabel"
+          severity="danger"
+          :loading="recreatingUserData"
+          @click="initializeUserData"
+        />
+      </div>
+    </Dialog>
   </section>
 </template>

@@ -146,6 +146,97 @@ export type CatalogStatus = {
   latest_successful_import: CatalogImport | null;
 };
 
+export type UserDataStatus = {
+  exists: boolean;
+  file_size: number | null;
+  modified_at: number | null;
+};
+
+export type WorkspaceCollection = {
+  id: number;
+  name: string;
+  is_default: boolean;
+  is_wishlist: boolean;
+  note: string | null;
+  created_at: number;
+};
+
+export type CardSuggestion = {
+  oracle_id: string;
+  face_order: number;
+  language_code: string;
+  language: string;
+  name: string;
+};
+
+export type PrintingFinish = {
+  id: number;
+  name: string;
+};
+
+export type CardPrinting = {
+  id: number;
+  scryfall_id: string;
+  set_code: string;
+  set_name: string;
+  keyrune_code: string;
+  release_date: number;
+  collector_number: string;
+  language_code: string;
+  language: string;
+  rarity: string;
+  finishes: PrintingFinish[];
+};
+
+export type PrintingOptions = {
+  oracle_id: string;
+  preferred_language_code: string;
+  printings: CardPrinting[];
+};
+
+export type ScryfallCard = {
+  name?: string;
+  printed_name?: string;
+  type_line?: string;
+  printed_type_line?: string;
+  oracle_text?: string;
+  printed_text?: string;
+  card_faces?: ScryfallCardFace[];
+};
+
+export type ScryfallCardFace = {
+  name?: string;
+  printed_name?: string;
+  type_line?: string;
+  printed_type_line?: string;
+  oracle_text?: string;
+  printed_text?: string;
+};
+
+export type CardDetails = {
+  printing_id: number;
+  image_normal_url: string | null;
+  image_native_url: string | null;
+  card: ScryfallCard;
+};
+
+export type WorkspaceCollectionItem = {
+  id: number;
+  collection_id: number;
+  scryfall_id: string;
+  name: string;
+  set_code: string;
+  collector_number: string;
+  language_code: string;
+  language: string;
+  finish_id: number;
+  finish: string;
+  condition_code: string;
+  quantity: number;
+  mana_cost: string;
+  type: string;
+};
+
 type ApiErrorBody = {
   detail?: unknown;
 };
@@ -364,5 +455,54 @@ export function startCatalogUpdate(): Promise<CatalogImport> {
 export function startCatalogRebuild(): Promise<CatalogImport> {
   return request<CatalogImport>('/api/admin/catalog/rebuild', {
     method: 'POST',
+  });
+}
+
+export function getUserDataStatus(): Promise<UserDataStatus> {
+  return request<UserDataStatus>('/api/admin/user-data');
+}
+
+export function recreateUserData(): Promise<UserDataStatus> {
+  return request<UserDataStatus>('/api/admin/user-data/recreate', {
+    method: 'POST',
+  });
+}
+
+export function listWorkspaceCollections(): Promise<WorkspaceCollection[]> {
+  return request<WorkspaceCollection[]>('/api/workspace/collections');
+}
+
+export function suggestWorkspaceCards(query: string, exact: boolean): Promise<CardSuggestion[]> {
+  const params = new URLSearchParams({ query, exact: String(exact) });
+  return request<CardSuggestion[]>(`/api/workspace/cards/suggest?${params.toString()}`);
+}
+
+export function listWorkspacePrintings(
+  oracleId: string,
+  preferredLanguageCode: string,
+): Promise<PrintingOptions> {
+  const params = new URLSearchParams({ preferred_language_code: preferredLanguageCode });
+  return request<PrintingOptions>(
+    `/api/workspace/cards/${oracleId}/printings?${params.toString()}`,
+  );
+}
+
+export function getWorkspacePrintingDetails(printingId: number): Promise<CardDetails> {
+  return request<CardDetails>(`/api/workspace/printings/${printingId}/details`);
+}
+
+export function listWorkspaceCollectionItems(
+  collectionId: number,
+): Promise<WorkspaceCollectionItem[]> {
+  return request<WorkspaceCollectionItem[]>(`/api/workspace/collections/${collectionId}/items`);
+}
+
+export function addWorkspaceCollectionItem(
+  collectionId: number,
+  payload: { printing_id: number; finish_id: number; condition_code: string; quantity: number },
+): Promise<WorkspaceCollectionItem> {
+  return request<WorkspaceCollectionItem>(`/api/workspace/collections/${collectionId}/items`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
   });
 }

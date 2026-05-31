@@ -7,15 +7,32 @@ from sqlalchemy.orm import Session
 
 from app.db.app_data_session import get_app_data_db
 from app.models.app_data import AppSetting, CatalogImport
-from app.schemas.admin import CatalogImportRead, CatalogStatusRead
+from app.schemas.admin import CatalogImportRead, CatalogStatusRead, UserDataStatusRead
 from app.services.catalog_download import (
     ACTIVE_DOWNLOAD_STATUSES,
     CATALOG_SOURCE_NAME,
     download_catalog_source,
 )
 from app.services.catalog_import import LOCAL_CATALOG_SOURCE_NAME, rebuild_catalog_from_local_source
+from app.services.user_data import (
+    recreate_user_data_db,
+    user_data_database_exists,
+    user_data_database_path,
+)
 
 router = APIRouter()
+
+
+def _user_data_status() -> UserDataStatusRead:
+    if not user_data_database_exists():
+        return UserDataStatusRead(exists=False, file_size=None, modified_at=None)
+
+    database_stat = user_data_database_path().stat()
+    return UserDataStatusRead(
+        exists=True,
+        file_size=database_stat.st_size,
+        modified_at=int(database_stat.st_mtime),
+    )
 
 
 def _reject_active_catalog_update(db: Session) -> None:
@@ -46,6 +63,17 @@ def get_catalog_status(db: Session = Depends(get_app_data_db)) -> CatalogStatusR
         latest_import=latest_import,
         latest_successful_import=latest_successful_import,
     )
+
+
+@router.get("/user-data", response_model=UserDataStatusRead)
+def get_user_data_status() -> UserDataStatusRead:
+    return _user_data_status()
+
+
+@router.post("/user-data/recreate", response_model=UserDataStatusRead)
+def recreate_user_data() -> UserDataStatusRead:
+    recreate_user_data_db()
+    return _user_data_status()
 
 
 @router.post(

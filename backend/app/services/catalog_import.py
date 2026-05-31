@@ -453,18 +453,23 @@ def _create_catalog(source_path: Path, catalog_path: Path) -> int:
             )
             select
                 p.oracle_id,
-                f.face_order,
+                0,
                 p.language_code,
-                coalesce(f.face_name, p.name),
+                p.name,
                 f.type,
                 f.text,
                 f.mana_value,
                 f.colors,
                 f.color_identity,
                 f.keywords,
-                1
+                case
+                    when p.language_code = 'en' then 0
+                    when p.language_code = 'ru' then 1
+                    else 3
+                end
             from card_printing_faces as f
             join card_printings as p on p.id = f.printing_id
+            where f.face_order = 0
             """
         )
         catalog.execute(
@@ -475,19 +480,24 @@ def _create_catalog(source_path: Path, catalog_path: Path) -> int:
             )
             select
                 p.oracle_id,
-                f.face_order,
+                0,
                 l.language_code,
-                coalesce(l.face_name, l.name),
+                l.name,
                 coalesce(l.type, f.type),
                 coalesce(l.text, f.text),
                 f.mana_value,
                 f.colors,
                 f.color_identity,
                 f.keywords,
-                2
+                case
+                    when l.language_code = 'en' then 0
+                    when l.language_code = 'ru' then 1
+                    else 3
+                end
             from card_face_localizations as l
             join card_printing_faces as f on f.id = l.face_id
             join card_printings as p on p.id = f.printing_id
+            where f.face_order = 0
             """
         )
 

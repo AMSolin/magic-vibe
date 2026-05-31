@@ -2,7 +2,7 @@ import shutil
 import sqlite3
 from collections.abc import Generator
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from sqlalchemy import create_engine
@@ -308,6 +308,16 @@ def test_catalog_import_builds_and_installs_catalog(workspace_tmp_path: Path) ->
     assert catalog.execute(
         "select name from card_search_index where language_code = 'ru'"
     ).fetchall() == [("Молния",)]
+    assert catalog.execute(
+        """
+        select name from card_search_index
+        where oracle_id = ? and language_code = 'en'
+        """,
+        (UUID(DFC_ORACLE_ID).bytes,),
+    ).fetchall() == [("Front // Back",)]
+    assert catalog.execute(
+        "select language_code, search_priority from card_search_index order by language_code"
+    ).fetchall() == [("en", 0), ("en", 0), ("ru", 1)]
     catalog.close()
 
     assert (workspace_tmp_path / "catalog.previous.db").read_bytes() == b"previous catalog"

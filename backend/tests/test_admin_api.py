@@ -1,4 +1,5 @@
 from collections.abc import Generator
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -164,3 +165,50 @@ def test_catalog_rebuild_requires_local_source(
     assert response.json() == {
         "detail": "Local MTGJSON source file is not available. Update the catalog first."
     }
+
+
+def test_user_data_status_reports_missing_database(
+    app_data_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app_data_session
+    monkeypatch.setattr("app.api.routes.admin.user_data_database_exists", lambda: False)
+
+    with TestClient(app) as client:
+        response = client.get("/api/admin/user-data")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "exists": False,
+        "file_size": None,
+        "modified_at": None,
+    }
+
+
+def test_user_data_recreate_initializes_database(
+    app_data_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _ = app_data_session
+    database_path = tmp_path / "user_data.db"
+    recreate_calls: list[None] = []
+
+    def recreate() -> None:
+        recreate_calls.append(None)
+        database_path.write_bytes(b"user data")
+
+    monkeypatch.setattr("app.api.routes.admin.recreate_user_data_db", recreate)
+    monkeypatch.setattr("app.api.routes.admin.user_data_database_path", lambda: database_path)
+    monkeypatch.setattr(
+        "app.api.routes.admin.user_data_database_exists",
+        database_path.is_file,
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/api/admin/user-data/recreate")
+
+    assert response.status_code == 200
+    assert response.json()["exists"] is True
+    assert response.json()["file_size"] == len(b"user data")
+    assert recreate_calls == [None]
