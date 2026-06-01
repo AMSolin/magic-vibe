@@ -264,6 +264,7 @@ export type WorkspaceCollectionItem = {
   printing_id: number;
   collection_id: number;
   scryfall_id: string;
+  oracle_id: string;
   name: string;
   set_code: string;
   keyrune_code: string;
@@ -572,5 +573,31 @@ export function addWorkspaceCollectionItem(
   return request<WorkspaceCollectionItem>(`/api/workspace/collections/${collectionId}/items`, {
     method: 'POST',
     body: JSON.stringify(payload),
+  });
+}
+
+export function updateWorkspaceCollectionItem(
+  collectionId: number,
+  itemId: number,
+  payload: {
+    printing_id: number;
+    finish_id: number;
+    language_code: string;
+    condition_code: string;
+    quantity: number;
+  },
+): Promise<WorkspaceCollectionItem> {
+  return request<WorkspaceCollectionItem>(
+    `/api/workspace/collections/${collectionId}/items/${itemId}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(payload),
+    },
+  );
+}
+
+export function deleteWorkspaceCollectionItem(collectionId: number, itemId: number): Promise<void> {
+  return request<void>(`/api/workspace/collections/${collectionId}/items/${itemId}`, {
+    method: 'DELETE',
   });
 }

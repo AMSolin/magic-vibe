@@ -150,7 +150,7 @@ def get_printing(printing_id: int) -> dict | None:
         row = catalog.execute(
             """
             select
-                p.id, p.scryfall_id, p.set_code, p.collector_number,
+                p.id, p.scryfall_id, p.oracle_id, p.set_code, p.collector_number,
                 p.language_code, p.name, f.mana_cost, f.type
             from card_printings as p
             join card_printing_faces as f on f.printing_id = p.id and f.face_order = 0
@@ -160,7 +160,11 @@ def get_printing(printing_id: int) -> dict | None:
         ).fetchone()
     if row is None:
         return None
-    return {**dict(row), "scryfall_id": _uuid_text(row["scryfall_id"])}
+    return {
+        **dict(row),
+        "scryfall_id": _uuid_text(row["scryfall_id"]),
+        "oracle_id": _uuid_text(row["oracle_id"]),
+    }
 
 
 def get_printing_by_scryfall_id(scryfall_id: bytes) -> dict | None:
@@ -168,7 +172,7 @@ def get_printing_by_scryfall_id(scryfall_id: bytes) -> dict | None:
         row = catalog.execute(
             """
             select
-                p.id, p.scryfall_id, p.set_code, p.collector_number,
+                p.id, p.scryfall_id, p.oracle_id, p.set_code, p.collector_number,
                 p.language_code, p.name, p.rarity, f.mana_cost, f.type,
                 l.name as language, s.keyrune_code
             from card_printings as p
@@ -181,7 +185,11 @@ def get_printing_by_scryfall_id(scryfall_id: bytes) -> dict | None:
         ).fetchone()
     if row is None:
         return None
-    return {**dict(row), "scryfall_id": _uuid_text(row["scryfall_id"])}
+    return {
+        **dict(row),
+        "scryfall_id": _uuid_text(row["scryfall_id"]),
+        "oracle_id": _uuid_text(row["oracle_id"]),
+    }
 
 
 def get_localized_printing_faces(printing_id: int, language_code: str | None = None) -> list[dict]:

@@ -221,6 +221,7 @@ def test_workspace_repeated_add_merges_quantity(workspace_client: TestClient) ->
     assert second.json()["quantity"] == 4
     assert second.json()["name"] == "Swamp"
     assert second.json()["printing_id"] == 1
+    assert second.json()["oracle_id"] == ORACLE_ID
     assert second.json()["keyrune_code"] == "tst"
     assert second.json()["rarity"] == "common"
 
@@ -257,6 +258,57 @@ def test_workspace_add_rejects_unavailable_localization(workspace_client: TestCl
 
     assert response.status_code == 400
     assert response.json()["detail"] == "Language is not available for this printing"
+
+
+def test_workspace_update_collection_item(workspace_client: TestClient) -> None:
+    created = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 2},
+    ).json()
+
+    response = workspace_client.patch(
+        f"/api/workspace/collections/1/items/{created['id']}",
+        json={"printing_id": 1, "finish_id": 1, "condition_code": "NM", "quantity": 3},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["id"] == created["id"]
+    assert response.json()["finish"] == "foil"
+    assert response.json()["quantity"] == 3
+
+
+def test_workspace_update_merges_identity_collision(workspace_client: TestClient) -> None:
+    nonfoil = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 2},
+    ).json()
+    foil = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 1, "condition_code": "NM", "quantity": 3},
+    ).json()
+
+    response = workspace_client.patch(
+        f"/api/workspace/collections/1/items/{foil['id']}",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 4},
+    )
+    items = workspace_client.get("/api/workspace/collections/1/items").json()
+
+    assert response.status_code == 200
+    assert response.json()["id"] == nonfoil["id"]
+    assert response.json()["quantity"] == 6
+    assert [item["id"] for item in items] == [nonfoil["id"]]
+
+
+def test_workspace_delete_collection_item(workspace_client: TestClient) -> None:
+    created = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 2},
+    ).json()
+
+    response = workspace_client.delete(f"/api/workspace/collections/1/items/{created['id']}")
+
+    assert response.status_code == 204
+    assert workspace_client.get("/api/workspace/collections/1/items").json() == []
 
 
 def test_workspace_printing_details_use_catalog_localization(

@@ -14,6 +14,7 @@ from app.schemas.workspace import (
     PrintingOptionsRead,
     WorkspaceCollectionItemCreate,
     WorkspaceCollectionItemRead,
+    WorkspaceCollectionItemUpdate,
     WorkspaceCollectionRead,
 )
 from app.services import catalog, scryfall
@@ -106,6 +107,7 @@ def _item_read(item: CollectionItem) -> WorkspaceCollectionItemRead:
         printing_id=printing["id"],
         collection_id=item.collection_id,
         scryfall_id=printing["scryfall_id"],
+        oracle_id=printing["oracle_id"],
         name=faces[0]["name"],
         set_code=printing["set_code"],
         keyrune_code=printing["keyrune_code"],
@@ -120,6 +122,32 @@ def _item_read(item: CollectionItem) -> WorkspaceCollectionItemRead:
         mana_cost=printing["mana_cost"],
         type=faces[0]["type_line"],
     )
+
+
+def _validated_item_identity(
+    payload: WorkspaceCollectionItemCreate,
+) -> tuple[bytes, str]:
+    printing = _required_printing(payload.printing_id)
+    selected_language_code = payload.language_code or printing["language_code"]
+    try:
+        finish_supported = catalog.printing_supports_finish(payload.printing_id, payload.finish_id)
+        language_supported = catalog.printing_supports_language(
+            payload.printing_id,
+            selected_language_code,
+        )
+    except FileNotFoundError as error:
+        raise _catalog_error(error) from error
+    if not finish_supported:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Finish is not available for this printing",
+        )
+    if not language_supported:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Language is not available for this printing",
+        )
+    return UUID(printing["scryfall_id"]).bytes, selected_language_code
 
 
 @router.get("/collections", response_model=list[WorkspaceCollectionRead])
@@ -238,28 +266,7 @@ def add_collection_item(
 ) -> WorkspaceCollectionItemRead:
     if db.get(Collection, collection_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    printing = _required_printing(payload.printing_id)
-    selected_language_code = payload.language_code or printing["language_code"]
-    try:
-        finish_supported = catalog.printing_supports_finish(payload.printing_id, payload.finish_id)
-        language_supported = catalog.printing_supports_language(
-            payload.printing_id,
-            selected_language_code,
-        )
-    except FileNotFoundError as error:
-        raise _catalog_error(error) from error
-    if not finish_supported:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Finish is not available for this printing",
-        )
-    if not language_supported:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Language is not available for this printing",
-        )
-
-    scryfall_id = UUID(printing["scryfall_id"]).bytes
+    scryfall_id, selected_language_code = _validated_item_identity(payload)
     item = db.scalar(
         select(CollectionItem).where(
             CollectionItem.collection_id == collection_id,
@@ -285,3 +292,58 @@ def add_collection_item(
     db.commit()
     db.refresh(item)
     return _item_read(item)
+
+
+@router.patch(
+    "/collections/{collection_id}/items/{item_id}",
+    response_model=WorkspaceCollectionItemRead,
+)
+def update_collection_item(
+    collection_id: int,
+    item_id: int,
+    payload: WorkspaceCollectionItemUpdate,
+    db: Session = Depends(get_user_data_db),
+) -> WorkspaceCollectionItemRead:
+    item = db.get(CollectionItem, item_id)
+    if item is None or item.collection_id != collection_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection item not found")
+    scryfall_id, selected_language_code = _validated_item_identity(payload)
+    matching_item = db.scalar(
+        select(CollectionItem).where(
+            CollectionItem.collection_id == collection_id,
+            CollectionItem.id != item.id,
+            CollectionItem.scryfall_id == scryfall_id,
+            CollectionItem.finish_id == payload.finish_id,
+            CollectionItem.language_code == selected_language_code,
+            CollectionItem.condition_code == payload.condition_code,
+        )
+    )
+    if matching_item is None:
+        item.scryfall_id = scryfall_id
+        item.finish_id = payload.finish_id
+        item.language_code = selected_language_code
+        item.condition_code = payload.condition_code
+        item.quantity = payload.quantity
+    else:
+        matching_item.quantity += payload.quantity
+        db.delete(item)
+        item = matching_item
+    db.commit()
+    db.refresh(item)
+    return _item_read(item)
+
+
+@router.delete(
+    "/collections/{collection_id}/items/{item_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_collection_item(
+    collection_id: int,
+    item_id: int,
+    db: Session = Depends(get_user_data_db),
+) -> None:
+    item = db.get(CollectionItem, item_id)
+    if item is None or item.collection_id != collection_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection item not found")
+    db.delete(item)
+    db.commit()

@@ -11,15 +11,19 @@ import Select from 'primevue/select';
 import Textarea from 'primevue/textarea';
 import ToggleSwitch from 'primevue/toggleswitch';
 
+import CardPrintingSelectors from '@/components/CardPrintingSelectors.vue';
+import type { CardPrintingSelection } from '@/components/CardPrintingSelectors.vue';
 import ScryfallSymbolsText from '@/components/ScryfallSymbolsText.vue';
 import {
   addWorkspaceCollectionItem,
+  deleteWorkspaceCollectionItem,
   getApiErrorMessage,
   getWorkspacePrintingDetails,
   listWorkspaceCollectionItems,
   listWorkspaceCollections,
   listWorkspacePrintings,
   suggestWorkspaceCards,
+  updateWorkspaceCollectionItem,
 } from '@/shared/api';
 import type {
   CardDetails,
@@ -29,16 +33,9 @@ import type {
   WorkspaceCollectionItem,
 } from '@/shared/api';
 
-type SetOption = {
-  code: string;
-  keyrune: string;
-  name: string;
-  releaseDate: number;
-};
-
 const conditions = ['NM', 'SP', 'MP', 'HP', 'D'];
 const sidebarCollapsed = ref(false);
-const activeTab = ref<'info' | 'add' | 'card'>('add');
+const activeTab = ref<'info' | 'add' | 'card' | 'edit'>('add');
 const collections = ref<WorkspaceCollection[]>([]);
 const selectedCollectionId = ref<number | null>(null);
 const inventory = ref<WorkspaceCollectionItem[]>([]);
@@ -53,18 +50,23 @@ function keyruneRarityClass(rarity: string): string {
   return rarity === 'special' ? 'ss-timeshifted' : `ss-${rarity}`;
 }
 const printings = ref<CardPrinting[]>([]);
-const selectedSetCode = ref('');
-const languageCode = ref('');
 const preferredLanguageCode = ref('');
-const cardNumber = ref('');
-const finishId = ref<number | null>(null);
+const addSelection = ref<CardPrintingSelection | null>(null);
 const condition = ref('NM');
 const quantity = ref(1);
+const editItem = ref<WorkspaceCollectionItem | null>(null);
+const editPrintings = ref<CardPrinting[]>([]);
+const editSelection = ref<CardPrintingSelection | null>(null);
+const editCondition = ref('NM');
+const editQuantity = ref(1);
 const details = ref<CardDetails | null>(null);
+const editDetails = ref<CardDetails | null>(null);
 const cardInfoDetails = ref<CardDetails | null>(null);
 const loadingDetails = ref(false);
+const loadingEditDetails = ref(false);
 const loadingCardInfo = ref(false);
 const previewImageLoading = ref(false);
+const editImageLoading = ref(false);
 const cardInfoImageLoading = ref(false);
 const saving = ref(false);
 const message = ref('');
@@ -77,57 +79,13 @@ const cardInfoFaceOrder = ref(0);
 let suggestTimer: number | undefined;
 let suppressNextSuggestionRefresh = false;
 let detailsRequestId = 0;
+let editDetailsRequestId = 0;
 
 const selectedCollection = computed(
   () => collections.value.find((collection) => collection.id === selectedCollectionId.value) ?? null,
 );
 const totalCards = computed(() => inventory.value.reduce((sum, item) => sum + item.quantity, 0));
-const sets = computed<SetOption[]>(() => {
-  const uniqueSets = new Map<string, SetOption>();
-  for (const printing of printings.value) {
-    if (!uniqueSets.has(printing.set_code)) {
-      uniqueSets.set(printing.set_code, {
-        code: printing.set_code,
-        keyrune: printing.keyrune_code.toLocaleLowerCase(),
-        name: printing.set_name,
-        releaseDate: printing.release_date,
-      });
-    }
-  }
-  return [...uniqueSets.values()].sort((left, right) => right.releaseDate - left.releaseDate);
-});
-const selectedSet = computed(() => sets.value.find((set) => set.code === selectedSetCode.value));
-const setPrintings = computed(() =>
-  printings.value.filter((printing) => printing.set_code === selectedSetCode.value),
-);
-const languages = computed(() => {
-  const uniqueLanguages = new Map<string, string>();
-  for (const printing of setPrintings.value) {
-    uniqueLanguages.set(printing.language_code, printing.language);
-    for (const localization of printing.localizations) {
-      uniqueLanguages.set(localization.code, localization.name);
-    }
-  }
-  return [...uniqueLanguages.entries()].map(([code, name]) => ({ code, name }));
-});
-const languagePrintings = computed(() =>
-  setPrintings.value.filter(
-    (printing) =>
-      printing.language_code === languageCode.value ||
-      printing.localizations.some((localization) => localization.code === languageCode.value),
-  ),
-);
-const numbers = computed(() => [...new Set(languagePrintings.value.map((printing) => printing.collector_number))]);
-const selectedPrinting = computed(
-  () =>
-    languagePrintings.value.find(
-      (printing) =>
-        printing.collector_number === cardNumber.value && printing.language_code === languageCode.value,
-    ) ??
-    languagePrintings.value.find((printing) => printing.collector_number === cardNumber.value) ??
-    null,
-);
-const finishes = computed(() => selectedPrinting.value?.finishes ?? []);
+const selectedPrinting = computed(() => addSelection.value?.printing ?? null);
 const cardFaces = computed(() => details.value?.card.card_faces ?? []);
 const selectedFace = computed(() => cardFaces.value[selectedFaceOrder.value] ?? details.value?.card);
 const cardName = computed(() => selectedFace.value?.printed_name ?? selectedFace.value?.name ?? '');
@@ -143,6 +101,8 @@ const imageNormalUrl = computed(() =>
 const imageNativeUrl = computed(() =>
   withFaceOrder(details.value?.image_native_url, selectedFaceOrder.value),
 );
+const editImageNormalUrl = computed(() => editDetails.value?.image_normal_url ?? '');
+const editImageNativeUrl = computed(() => editDetails.value?.image_native_url ?? '');
 const cardInfoFaces = computed(() => cardInfoDetails.value?.card.card_faces ?? []);
 const cardInfoFace = computed(
   () => cardInfoFaces.value[cardInfoFaceOrder.value] ?? cardInfoDetails.value?.card,
@@ -181,49 +141,22 @@ const cardInfoLegalities = computed(() =>
     .filter(([, legality]) => legality !== 'not_legal')
     .map(([format, legality]) => ({ format, legality })),
 );
-
-function usePrintingDefaults(languagePreference?: string): void {
-  const firstSet =
-    (languagePreference
-      ? sets.value.find((set) =>
-          printings.value.some(
-            (printing) =>
-              printing.set_code === set.code &&
-              (printing.language_code === languagePreference ||
-                printing.localizations.some(
-                  (localization) => localization.code === languagePreference,
-                )),
-          ),
-        )
-      : undefined) ?? sets.value[0];
-  if (!firstSet) {
-    return;
+const editChanges = computed(() => {
+  const item = editItem.value;
+  const selection = editSelection.value;
+  if (!item || !selection) {
+    return [];
   }
-  selectedSetCode.value = firstSet.code;
-  selectSet(firstSet);
-}
-
-function selectSet(set: SetOption): void {
-  selectedSetCode.value = set.code;
-  const availableLanguages = new Set(
-    printings.value.flatMap((printing) =>
-      printing.set_code === set.code
-        ? [printing.language_code, ...printing.localizations.map((localization) => localization.code)]
-        : [],
-    ),
-  );
-  languageCode.value =
-    (preferredLanguageCode.value && availableLanguages.has(preferredLanguageCode.value)
-      ? preferredLanguageCode.value
-      : languages.value[0]?.code) ?? '';
-  cardNumber.value = numbers.value[0] ?? '';
-  finishId.value = finishes.value[0]?.id ?? null;
-}
-
-function selectLanguage(value: string): void {
-  preferredLanguageCode.value = value;
-  languageCode.value = value;
-}
+  return [
+    ['Set', item.set_code, selection.setCode],
+    ['Collector #', item.collector_number, selection.collectorNumber],
+    ['Language', item.language, selection.language],
+    ['Finish', item.finish, selection.finish],
+    ['Condition', item.condition_code, editCondition.value],
+    ['Quantity', String(item.quantity), String(editQuantity.value)],
+  ].filter(([, saved, changed]) => saved !== changed);
+});
+const editDirty = computed(() => editChanges.value.length > 0);
 
 async function chooseSuggestion(suggestion: CardSuggestion): Promise<void> {
   selectedAlias.value = suggestion;
@@ -236,7 +169,6 @@ async function chooseSuggestion(suggestion: CardSuggestion): Promise<void> {
     const options = await listWorkspacePrintings(suggestion.oracle_id, suggestion.language_code);
     printings.value = options.printings;
     preferredLanguageCode.value = options.preferred_language_code;
-    usePrintingDefaults(options.preferred_language_code);
   } catch (requestError) {
     error.value = getApiErrorMessage(requestError, 'Printing options are unavailable');
   }
@@ -268,11 +200,8 @@ function clearCardSearch(): void {
   suggestionsOpen.value = false;
   selectedAlias.value = null;
   printings.value = [];
-  selectedSetCode.value = '';
-  languageCode.value = '';
   preferredLanguageCode.value = '';
-  cardNumber.value = '';
-  finishId.value = null;
+  addSelection.value = null;
   details.value = null;
   detailsRequestId += 1;
   selectedFaceOrder.value = 0;
@@ -316,7 +245,7 @@ async function refreshDetails(): Promise<void> {
   try {
     const nextDetails = await getWorkspacePrintingDetails(
       selectedPrinting.value.id,
-      languageCode.value,
+      addSelection.value?.languageCode,
     );
     if (requestId === detailsRequestId) {
       details.value = nextDetails;
@@ -334,10 +263,45 @@ async function refreshDetails(): Promise<void> {
   }
 }
 
+async function refreshEditDetails(): Promise<void> {
+  const requestId = ++editDetailsRequestId;
+  const selection = editSelection.value;
+  if (!selection?.printing) {
+    editDetails.value = null;
+    return;
+  }
+  loadingEditDetails.value = true;
+  error.value = '';
+  try {
+    const nextDetails = await getWorkspacePrintingDetails(
+      selection.printing.id,
+      selection.languageCode,
+    );
+    if (requestId === editDetailsRequestId) {
+      editDetails.value = nextDetails;
+    }
+  } catch (requestError) {
+    if (requestId !== editDetailsRequestId) {
+      return;
+    }
+    editDetails.value = null;
+    error.value = getApiErrorMessage(requestError, 'Card preview is unavailable');
+  } finally {
+    if (requestId === editDetailsRequestId) {
+      loadingEditDetails.value = false;
+    }
+  }
+}
+
 async function refreshInventory(): Promise<void> {
   selectedInventoryItem.value = null;
+  editItem.value = null;
+  editPrintings.value = [];
+  editSelection.value = null;
+  editDetails.value = null;
+  editDetailsRequestId += 1;
   cardInfoDetails.value = null;
-  if (activeTab.value === 'card') {
+  if (activeTab.value === 'card' || activeTab.value === 'edit') {
     activeTab.value = 'add';
   }
   if (selectedCollectionId.value === null) {
@@ -352,12 +316,25 @@ async function refreshInventory(): Promise<void> {
 }
 
 async function selectInventoryItem(item: WorkspaceCollectionItem): Promise<void> {
+  if (editDirty.value && editItem.value?.id !== item.id && !window.confirm('Discard unsaved changes?')) {
+    selectedInventoryItem.value = editItem.value;
+    return;
+  }
   selectedInventoryItem.value = item;
+  editItem.value = item;
+  editCondition.value = item.condition_code;
+  editQuantity.value = item.quantity;
+  editSelection.value = null;
+  editDetails.value = null;
+  editDetailsRequestId += 1;
+  message.value = '';
   activeTab.value = 'card';
   loadingCardInfo.value = true;
   cardInfoFaceOrder.value = 0;
   error.value = '';
   try {
+    const options = await listWorkspacePrintings(item.oracle_id, item.language_code);
+    editPrintings.value = options.printings;
     cardInfoDetails.value = await getWorkspacePrintingDetails(item.printing_id, item.language_code);
   } catch (requestError) {
     cardInfoDetails.value = null;
@@ -368,7 +345,11 @@ async function selectInventoryItem(item: WorkspaceCollectionItem): Promise<void>
 }
 
 async function addCard(): Promise<void> {
-  if (selectedCollectionId.value === null || !selectedPrinting.value || finishId.value === null) {
+  if (
+    selectedCollectionId.value === null ||
+    !selectedPrinting.value ||
+    addSelection.value?.finishId == null
+  ) {
     return;
   }
   saving.value = true;
@@ -377,8 +358,8 @@ async function addCard(): Promise<void> {
   try {
     await addWorkspaceCollectionItem(selectedCollectionId.value, {
       printing_id: selectedPrinting.value.id,
-      finish_id: finishId.value,
-      language_code: languageCode.value,
+      finish_id: addSelection.value.finishId,
+      language_code: addSelection.value.languageCode,
       condition_code: condition.value,
       quantity: quantity.value,
     });
@@ -386,6 +367,75 @@ async function addCard(): Promise<void> {
     message.value = `Added to ${selectedCollection.value?.name ?? 'collection'}`;
   } catch (requestError) {
     error.value = getApiErrorMessage(requestError, 'Card could not be added');
+  } finally {
+    saving.value = false;
+  }
+}
+
+function discardEditChanges(): void {
+  const item = editItem.value;
+  if (!item) {
+    return;
+  }
+  editCondition.value = item.condition_code;
+  editQuantity.value = item.quantity;
+  editSelection.value = null;
+  editPrintings.value = [...editPrintings.value];
+}
+
+async function saveCardChanges(): Promise<void> {
+  const item = editItem.value;
+  const selection = editSelection.value;
+  if (
+    selectedCollectionId.value === null ||
+    !item ||
+    !selection?.printing ||
+    selection.finishId == null ||
+    !editDirty.value
+  ) {
+    return;
+  }
+  saving.value = true;
+  error.value = '';
+  message.value = '';
+  try {
+    const updated = await updateWorkspaceCollectionItem(selectedCollectionId.value, item.id, {
+      printing_id: selection.printing.id,
+      finish_id: selection.finishId,
+      language_code: selection.languageCode,
+      condition_code: editCondition.value,
+      quantity: editQuantity.value,
+    });
+    await refreshInventory();
+    await selectInventoryItem(updated);
+    activeTab.value = 'edit';
+    message.value = 'Changes saved';
+  } catch (requestError) {
+    error.value = getApiErrorMessage(requestError, 'Card changes could not be saved');
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function deleteCard(): Promise<void> {
+  const item = editItem.value;
+  if (
+    selectedCollectionId.value === null ||
+    !item ||
+    !window.confirm(`Delete ${item.name} from this collection?`)
+  ) {
+    return;
+  }
+  saving.value = true;
+  error.value = '';
+  message.value = '';
+  try {
+    await deleteWorkspaceCollectionItem(selectedCollectionId.value, item.id);
+    await refreshInventory();
+    activeTab.value = 'add';
+    message.value = 'Card deleted';
+  } catch (requestError) {
+    error.value = getApiErrorMessage(requestError, 'Card could not be deleted');
   } finally {
     saving.value = false;
   }
@@ -419,15 +469,16 @@ watch(cardInfoImageNormalUrl, (url) => {
   cardInfoImageLoading.value = Boolean(url);
 });
 
-watch(languageCode, () => {
-  cardNumber.value = numbers.value.includes(cardNumber.value) ? cardNumber.value : (numbers.value[0] ?? '');
+watch(editImageNormalUrl, (url) => {
+  editImageLoading.value = Boolean(url);
 });
 
-watch([selectedPrinting, languageCode], () => {
-  finishId.value = finishes.value.some((finish) => finish.id === finishId.value)
-    ? finishId.value
-    : (finishes.value[0]?.id ?? null);
+watch(addSelection, () => {
   void refreshDetails();
+});
+
+watch(editSelection, () => {
+  void refreshEditDetails();
 });
 
 onMounted(async () => {
@@ -529,12 +580,17 @@ onUnmounted(() => {
           :severity="activeTab === 'card' ? undefined : 'secondary'"
           @click="activeTab = 'card'"
         />
+        <Button
+          v-if="selectedInventoryItem"
+          label="Edit card"
+          :severity="activeTab === 'edit' ? undefined : 'secondary'"
+          @click="activeTab = 'edit'"
+        />
       </div>
 
       <p v-if="error" class="empty-state">{{ error }}</p>
 
       <section v-if="activeTab === 'info'" class="inspector-content">
-        <h2>Collection info</h2>
         <label class="field"><span>Name</span><InputText :model-value="selectedCollection?.name" /></label>
         <label class="field"><span>Owner</span><Select model-value="Player" :options="['Player']" /></label>
         <label class="field"><span>Created at</span><InputText :model-value="String(selectedCollection?.created_at ?? '')" /></label>
@@ -544,7 +600,6 @@ onUnmounted(() => {
       </section>
 
       <section v-else-if="activeTab === 'card'" class="inspector-content card-info-inspector">
-        <h2>Card info</h2>
         <template v-if="selectedInventoryItem">
           <p v-if="loadingCardInfo" class="empty-state">Loading card info...</p>
           <template v-else-if="cardInfoDetails">
@@ -617,6 +672,83 @@ onUnmounted(() => {
         </template>
       </section>
 
+      <section v-else-if="activeTab === 'edit'" class="inspector-content edit-card-inspector">
+        <template v-if="editItem">
+          <button
+            type="button"
+            class="card-image-button"
+            aria-label="View edited card image at native resolution"
+            :disabled="!editImageNativeUrl"
+            @click="openImageDialog(editImageNativeUrl)"
+          >
+            <img
+              v-if="editImageNormalUrl"
+              :src="editImageNormalUrl"
+              :alt="editItem.name"
+              :class="{ 'loading-image': editImageLoading }"
+              @load="editImageLoading = false"
+              @error="editImageLoading = false"
+            />
+            <span v-if="editImageLoading" class="card-image-loading-overlay">
+              <ProgressSpinner />
+            </span>
+            <span v-else-if="!editImageNormalUrl">
+              {{ loadingEditDetails ? 'Loading image…' : 'Image unavailable' }}
+            </span>
+          </button>
+          <CardPrintingSelectors
+            :printings="editPrintings"
+            :preferred-language-code="editItem.language_code"
+            :initial-printing-id="editItem.printing_id"
+            :initial-language-code="editItem.language_code"
+            :initial-finish-id="editItem.finish_id"
+            @selection-change="editSelection = $event"
+          />
+          <div class="compact-field-row">
+            <label class="field">
+              <span>Condition</span>
+              <Select v-model="editCondition" :options="conditions" />
+            </label>
+            <label class="field">
+              <span>Quantity</span>
+              <InputNumber v-model="editQuantity" :min="1" show-buttons />
+            </label>
+          </div>
+          <details v-if="editDirty" class="unsaved-changes">
+            <summary>Unsaved changes <span>Show details</span></summary>
+            <div v-for="[label, saved, changed] in editChanges" :key="label" class="change-row">
+              <strong>{{ label }}</strong>
+              <span>{{ saved }}</span>
+              <i class="pi pi-arrow-right" />
+              <span>{{ changed }}</span>
+            </div>
+          </details>
+          <div class="panel-actions edit-actions">
+            <span v-if="message" class="success-text">{{ message }}</span>
+            <Button
+              icon="pi pi-save"
+              label="Save changes"
+              :disabled="!editDirty"
+              :loading="saving"
+              @click="saveCardChanges"
+            />
+            <Button
+              label="Discard changes"
+              severity="secondary"
+              :disabled="!editDirty"
+              @click="discardEditChanges"
+            />
+            <Button
+              icon="pi pi-trash"
+              label="Delete card"
+              severity="danger"
+              :loading="saving"
+              @click="deleteCard"
+            />
+          </div>
+        </template>
+      </section>
+
       <section v-else class="inspector-content add-card-inspector">
         <div class="card-search-row">
           <div ref="searchContainer" class="search-with-suggestions">
@@ -649,7 +781,7 @@ onUnmounted(() => {
           <label class="toggle-field"><Checkbox v-model="exactMatch" binary /><span>Exact match</span></label>
         </div>
 
-        <template v-if="selectedAlias && selectedPrinting">
+        <template v-if="selectedAlias && printings.length">
           <div class="card-config-layout">
             <div class="card-image-wrap">
               <div class="selected-alias">{{ cardName }}</div>
@@ -686,29 +818,11 @@ onUnmounted(() => {
             </div>
 
             <div class="card-attributes">
-              <div class="field">
-                <span>Set</span>
-                <div class="set-icon-grid">
-                  <button v-for="set in sets" :key="set.code" type="button" :aria-label="set.name" :class="{ selected: selectedSetCode === set.code }" @click="selectSet(set)">
-                    <i :class="`ss ss-${set.keyrune} ss-2x`" />
-                  </button>
-                </div>
-                <strong class="selected-set-name">{{ selectedSet?.name }}</strong>
-              </div>
-              <label class="field">
-                <span>Language</span>
-                <Select :model-value="languageCode" :options="languages" option-label="name" option-value="code" @update:model-value="selectLanguage" />
-              </label>
-              <div class="field">
-                <span>Card number</span>
-                <div class="number-toggle-group">
-                  <button v-for="number in numbers" :key="number" type="button" :class="{ selected: cardNumber === number }" @click="cardNumber = number">{{ number }}</button>
-                </div>
-              </div>
-              <label class="field">
-                <span>Finish</span>
-                <Select v-model="finishId" :options="finishes" option-label="name" option-value="id" />
-              </label>
+              <CardPrintingSelectors
+                :printings="printings"
+                :preferred-language-code="preferredLanguageCode"
+                @selection-change="addSelection = $event"
+              />
               <div class="compact-field-row">
                 <label class="field"><span>Condition</span><Select v-model="condition" :options="conditions" /></label>
                 <label class="field"><span>Quantity</span><InputNumber v-model="quantity" :min="1" show-buttons /></label>

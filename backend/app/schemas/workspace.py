@@ -54,11 +54,16 @@ class WorkspaceCollectionItemCreate(BaseModel):
     quantity: int = Field(default=1, ge=1)
 
 
+class WorkspaceCollectionItemUpdate(WorkspaceCollectionItemCreate):
+    pass
+
+
 class WorkspaceCollectionItemRead(BaseModel):
     id: int
     printing_id: int
     collection_id: int
     scryfall_id: str
+    oracle_id: str
     name: str
     set_code: str
     keyrune_code: str
