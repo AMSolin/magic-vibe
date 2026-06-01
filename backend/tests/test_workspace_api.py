@@ -1,6 +1,7 @@
 import sqlite3
 from collections.abc import Generator
 from pathlib import Path
+from urllib.error import HTTPError
 from uuid import UUID
 
 import pytest
@@ -38,6 +39,10 @@ def _create_catalog(path: Path) -> None:
             face_name text, mana_cost text, mana_value real, type text, text text,
             colors text, color_identity text, keywords text, power text, toughness text,
             loyalty text, defense text
+        );
+        create table card_face_localizations (
+            id integer primary key, face_id integer, language_code text, name text,
+            face_name text, type text, text text, flavor_text text
         );
         create table card_search_index (
             id integer primary key, oracle_id blob, face_order integer, language_code text,
@@ -77,6 +82,31 @@ def _create_catalog(path: Path) -> None:
         )
         """,
         (UUID(ORACLE_ID).bytes,),
+    )
+    db.execute(
+        """
+        insert into card_search_index values (
+            3, ?, 0, 'ru', ?, ?, ?, 0, 'B', 'B', '', 1
+        )
+        """,
+        (
+            UUID(ORACLE_ID).bytes,
+            "\u0411\u043e\u043b\u043e\u0442\u043e",
+            "\u0411\u0430\u0437\u043e\u0432\u0430\u044f \u0437\u0435\u043c\u043b\u044f - \u0411\u043e\u043b\u043e\u0442\u043e",
+            "({T}: \u0414\u043e\u0431\u0430\u0432\u044c\u0442\u0435 {B}.)",
+        ),
+    )
+    db.execute(
+        """
+        insert into card_face_localizations values (
+            1, 1, 'ru', ?, null, ?, ?, null
+        )
+        """,
+        (
+            "\u0411\u043e\u043b\u043e\u0442\u043e",
+            "\u0411\u0430\u0437\u043e\u0432\u0430\u044f \u0437\u0435\u043c\u043b\u044f - \u0411\u043e\u043b\u043e\u0442\u043e",
+            "({T}: \u0414\u043e\u0431\u0430\u0432\u044c\u0442\u0435 {B}.)",
+        ),
     )
     db.execute(
         """
@@ -140,6 +170,14 @@ def test_workspace_search_and_printing_options(workspace_client: TestClient) -> 
     )
     assert exact_response.json() == []
 
+    russian_response = workspace_client.get(
+        "/api/workspace/cards/suggest",
+        params={"query": "\u0431\u043e\u043b\u043e\u0442\u043e"},
+    )
+    assert [suggestion["name"] for suggestion in russian_response.json()] == [
+        "\u0411\u043e\u043b\u043e\u0442\u043e"
+    ]
+
     options_response = workspace_client.get(
         f"/api/workspace/cards/{ORACLE_ID}/printings",
         params={"preferred_language_code": "en"},
@@ -148,6 +186,9 @@ def test_workspace_search_and_printing_options(workspace_client: TestClient) -> 
     assert options_response.json()["printings"][0]["finishes"] == [
         {"id": 0, "name": "nonfoil"},
         {"id": 1, "name": "foil"},
+    ]
+    assert options_response.json()["printings"][0]["localizations"] == [
+        {"code": "ru", "name": "Russian"}
     ]
 
 
@@ -179,6 +220,90 @@ def test_workspace_repeated_add_merges_quantity(workspace_client: TestClient) ->
     assert second.json()["id"] == first.json()["id"]
     assert second.json()["quantity"] == 4
     assert second.json()["name"] == "Swamp"
+    assert second.json()["printing_id"] == 1
+    assert second.json()["keyrune_code"] == "tst"
+    assert second.json()["rarity"] == "common"
+
+
+def test_workspace_add_uses_selected_localization(workspace_client: TestClient) -> None:
+    response = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={
+            "printing_id": 1,
+            "finish_id": 0,
+            "language_code": "ru",
+            "condition_code": "NM",
+            "quantity": 1,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["language_code"] == "ru"
+    assert response.json()["language"] == "Russian"
+    assert response.json()["name"] == "\u0411\u043e\u043b\u043e\u0442\u043e"
+
+
+def test_workspace_add_rejects_unavailable_localization(workspace_client: TestClient) -> None:
+    response = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={
+            "printing_id": 1,
+            "finish_id": 0,
+            "language_code": "de",
+            "condition_code": "NM",
+            "quantity": 1,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Language is not available for this printing"
+
+
+def test_workspace_printing_details_use_catalog_localization(
+    workspace_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    languages: list[str | None] = []
+
+    def get_localized_printing_faces(printing_id: int, language_code: str | None) -> list[dict]:
+        _ = printing_id
+        languages.append(language_code)
+        return [
+            {
+                "face_order": 0,
+                "name": "\u0411\u043e\u043b\u043e\u0442\u043e",
+                "mana_cost": "",
+                "type_line": "\u0411\u0430\u0437\u043e\u0432\u0430\u044f \u0437\u0435\u043c\u043b\u044f - \u0411\u043e\u043b\u043e\u0442\u043e",
+                "oracle_text": "({T}: \u0414\u043e\u0431\u0430\u0432\u044c\u0442\u0435 {B}.)",
+                "flavor_text": None,
+            }
+        ]
+
+    monkeypatch.setattr(
+        scryfall,
+        "get_card_json",
+        lambda *args: {
+            "name": "Swamp",
+            "type_line": "Basic Land - Swamp",
+            "oracle_text": "({T}: Add {B}.)",
+        },
+    )
+    monkeypatch.setattr(
+        catalog,
+        "get_localized_printing_faces",
+        get_localized_printing_faces,
+    )
+
+    response = workspace_client.get("/api/workspace/printings/1/details?language_code=ru")
+
+    assert response.status_code == 200
+    card = response.json()["card"]
+    assert languages == ["ru"]
+    assert card["printed_name"] == "\u0411\u043e\u043b\u043e\u0442\u043e"
+    assert card["printed_type_line"] == (
+        "\u0411\u0430\u0437\u043e\u0432\u0430\u044f \u0437\u0435\u043c\u043b\u044f - \u0411\u043e\u043b\u043e\u0442\u043e"
+    )
+    assert card["printed_text"] == "({T}: \u0414\u043e\u0431\u0430\u0432\u044c\u0442\u0435 {B}.)"
 
 
 def test_scryfall_json_and_image_are_cached(
@@ -203,6 +328,44 @@ def test_scryfall_json_and_image_are_cached(
     assert first_card == second_card
     assert first_image == second_image
     assert len(calls) == 2
+
+
+def test_scryfall_placeholder_image_falls_back_to_english(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    languages: list[str] = []
+
+    def get_card_json(set_code: str, collector_number: str, language_code: str) -> dict:
+        _ = set_code, collector_number
+        languages.append(language_code)
+        return {"image_status": "placeholder" if language_code == "ru" else "highres_scan"}
+
+    monkeypatch.setattr(scryfall, "get_card_json", get_card_json)
+
+    card = scryfall.get_card_json_for_image("TST", "1", "ru")
+
+    assert card["image_status"] == "highres_scan"
+    assert languages == ["ru", "en"]
+
+
+def test_scryfall_missing_localized_image_falls_back_to_english(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    languages: list[str] = []
+
+    def get_card_json(set_code: str, collector_number: str, language_code: str) -> dict:
+        _ = set_code, collector_number
+        languages.append(language_code)
+        if language_code == "ru":
+            raise HTTPError("https://example.test", 404, "Not Found", {}, None)
+        return {"image_status": "highres_scan"}
+
+    monkeypatch.setattr(scryfall, "get_card_json", get_card_json)
+
+    card = scryfall.get_card_json_for_image("TST", "1", "ru")
+
+    assert card["image_status"] == "highres_scan"
+    assert languages == ["ru", "en"]
 
 
 def test_scryfall_multi_face_images_are_cached_separately(
@@ -242,3 +405,80 @@ def test_scryfall_multi_face_images_are_cached_separately(
         "https://cards.scryfall.io/front.jpg",
         "https://cards.scryfall.io/back.jpg",
     ]
+
+
+def test_scryfall_symbols_are_cached_with_manifest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    monkeypatch.setattr(scryfall.settings, "scryfall_cache_path", str(tmp_path))
+
+    def request_bytes(url: str, *, accept: str) -> tuple[bytes, str]:
+        _ = accept
+        calls.append(url)
+        if url.endswith("/symbology"):
+            return (
+                b'{"data":[{"symbol":"{W}","svg_uri":"https://svgs.scryfall.io/W.svg",'
+                b'"english":"white mana"}]}',
+                "application/json",
+            )
+        return b"<svg>white</svg>", "image/svg+xml"
+
+    monkeypatch.setattr(scryfall, "_request_bytes", request_bytes)
+    first_status = scryfall.update_symbols_cache()
+    second_status = scryfall.update_symbols_cache()
+    manifest = scryfall.get_symbols_manifest()
+    filename = manifest["symbols"]["{W}"]["file"]
+
+    assert first_status["symbol_count"] == 1
+    assert second_status["symbol_count"] == 1
+    assert manifest["symbols"]["{W}"]["english"] == "white mana"
+    assert scryfall.get_symbol_file(filename) == tmp_path / "symbols" / "svg" / filename
+    assert calls == [
+        f"{scryfall.settings.scryfall_api_url}/symbology",
+        "https://svgs.scryfall.io/W.svg",
+        f"{scryfall.settings.scryfall_api_url}/symbology",
+    ]
+
+
+def test_workspace_symbol_manifest_and_svg_are_available(
+    workspace_client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    svg_path = tmp_path / "white.svg"
+    svg_path.write_text("<svg>white</svg>", encoding="utf-8")
+    monkeypatch.setattr(
+        scryfall,
+        "get_symbols_manifest",
+        lambda: {
+            "updated_at": 1_780_275_600,
+            "symbols": {
+                "{W}": {
+                    "file": "white.svg",
+                    "svg_uri": "https://svgs.scryfall.io/W.svg",
+                    "english": "white mana",
+                }
+            },
+        },
+    )
+    monkeypatch.setattr(
+        scryfall,
+        "get_symbol_file",
+        lambda filename: svg_path if filename == "white.svg" else None,
+    )
+
+    manifest = workspace_client.get("/api/workspace/symbols")
+    svg = workspace_client.get("/api/workspace/symbols/svg/white.svg")
+
+    assert manifest.status_code == 200
+    assert manifest.json() == {
+        "{W}": {
+            "image_url": "/api/workspace/symbols/svg/white.svg",
+            "label": "white mana",
+        }
+    }
+    assert svg.status_code == 200
+    assert svg.headers["content-type"] == "image/svg+xml"
+    assert svg.text == "<svg>white</svg>"

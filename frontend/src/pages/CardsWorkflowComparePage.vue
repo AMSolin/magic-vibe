@@ -2,12 +2,16 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import Button from 'primevue/button';
 import Checkbox from 'primevue/checkbox';
+import Column from 'primevue/column';
+import DataTable from 'primevue/datatable';
 import InputNumber from 'primevue/inputnumber';
 import InputText from 'primevue/inputtext';
+import ProgressSpinner from 'primevue/progressspinner';
 import Select from 'primevue/select';
 import Textarea from 'primevue/textarea';
 import ToggleSwitch from 'primevue/toggleswitch';
 
+import ScryfallSymbolsText from '@/components/ScryfallSymbolsText.vue';
 import {
   addWorkspaceCollectionItem,
   getApiErrorMessage,
@@ -34,32 +38,45 @@ type SetOption = {
 
 const conditions = ['NM', 'SP', 'MP', 'HP', 'D'];
 const sidebarCollapsed = ref(false);
-const activeTab = ref<'info' | 'add'>('add');
+const activeTab = ref<'info' | 'add' | 'card'>('add');
 const collections = ref<WorkspaceCollection[]>([]);
 const selectedCollectionId = ref<number | null>(null);
 const inventory = ref<WorkspaceCollectionItem[]>([]);
+const selectedInventoryItem = ref<WorkspaceCollectionItem | null>(null);
 const search = ref('');
 const exactMatch = ref(false);
 const suggestions = ref<CardSuggestion[]>([]);
 const suggestionsOpen = ref(false);
 const selectedAlias = ref<CardSuggestion | null>(null);
+
+function keyruneRarityClass(rarity: string): string {
+  return rarity === 'special' ? 'ss-timeshifted' : `ss-${rarity}`;
+}
 const printings = ref<CardPrinting[]>([]);
 const selectedSetCode = ref('');
 const languageCode = ref('');
+const preferredLanguageCode = ref('');
 const cardNumber = ref('');
 const finishId = ref<number | null>(null);
 const condition = ref('NM');
 const quantity = ref(1);
 const details = ref<CardDetails | null>(null);
+const cardInfoDetails = ref<CardDetails | null>(null);
 const loadingDetails = ref(false);
+const loadingCardInfo = ref(false);
+const previewImageLoading = ref(false);
+const cardInfoImageLoading = ref(false);
 const saving = ref(false);
 const message = ref('');
 const error = ref('');
 const imageDialog = ref<HTMLDialogElement | null>(null);
+const dialogImageUrl = ref('');
 const searchContainer = ref<HTMLElement | null>(null);
 const selectedFaceOrder = ref(0);
+const cardInfoFaceOrder = ref(0);
 let suggestTimer: number | undefined;
 let suppressNextSuggestionRefresh = false;
+let detailsRequestId = 0;
 
 const selectedCollection = computed(
   () => collections.value.find((collection) => collection.id === selectedCollectionId.value) ?? null,
@@ -87,15 +104,26 @@ const languages = computed(() => {
   const uniqueLanguages = new Map<string, string>();
   for (const printing of setPrintings.value) {
     uniqueLanguages.set(printing.language_code, printing.language);
+    for (const localization of printing.localizations) {
+      uniqueLanguages.set(localization.code, localization.name);
+    }
   }
   return [...uniqueLanguages.entries()].map(([code, name]) => ({ code, name }));
 });
 const languagePrintings = computed(() =>
-  setPrintings.value.filter((printing) => printing.language_code === languageCode.value),
+  setPrintings.value.filter(
+    (printing) =>
+      printing.language_code === languageCode.value ||
+      printing.localizations.some((localization) => localization.code === languageCode.value),
+  ),
 );
 const numbers = computed(() => [...new Set(languagePrintings.value.map((printing) => printing.collector_number))]);
 const selectedPrinting = computed(
   () =>
+    languagePrintings.value.find(
+      (printing) =>
+        printing.collector_number === cardNumber.value && printing.language_code === languageCode.value,
+    ) ??
     languagePrintings.value.find((printing) => printing.collector_number === cardNumber.value) ??
     null,
 );
@@ -103,37 +131,98 @@ const finishes = computed(() => selectedPrinting.value?.finishes ?? []);
 const cardFaces = computed(() => details.value?.card.card_faces ?? []);
 const selectedFace = computed(() => cardFaces.value[selectedFaceOrder.value] ?? details.value?.card);
 const cardName = computed(() => selectedFace.value?.printed_name ?? selectedFace.value?.name ?? '');
+const cardManaCost = computed(() => selectedFace.value?.mana_cost ?? '');
 const cardText = computed(() => selectedFace.value?.printed_text ?? selectedFace.value?.oracle_text ?? '');
 const cardType = computed(() => selectedFace.value?.printed_type_line ?? selectedFace.value?.type_line ?? '');
+function withFaceOrder(url: string | null | undefined, faceOrder: number): string {
+  return url ? `${url}${url.includes('?') ? '&' : '?'}face_order=${faceOrder}` : '';
+}
 const imageNormalUrl = computed(() =>
-  details.value?.image_normal_url ? `${details.value.image_normal_url}?face_order=${selectedFaceOrder.value}` : '',
+  withFaceOrder(details.value?.image_normal_url, selectedFaceOrder.value),
 );
 const imageNativeUrl = computed(() =>
-  details.value?.image_native_url ? `${details.value.image_native_url}?face_order=${selectedFaceOrder.value}` : '',
+  withFaceOrder(details.value?.image_native_url, selectedFaceOrder.value),
+);
+const cardInfoFaces = computed(() => cardInfoDetails.value?.card.card_faces ?? []);
+const cardInfoFace = computed(
+  () => cardInfoFaces.value[cardInfoFaceOrder.value] ?? cardInfoDetails.value?.card,
+);
+const cardInfoName = computed(
+  () => cardInfoFace.value?.printed_name ?? cardInfoFace.value?.name ?? selectedInventoryItem.value?.name ?? '',
+);
+const cardInfoManaCost = computed(() => cardInfoFace.value?.mana_cost ?? '');
+const cardInfoType = computed(
+  () => cardInfoFace.value?.printed_type_line ?? cardInfoFace.value?.type_line ?? '',
+);
+const cardInfoText = computed(
+  () => cardInfoFace.value?.printed_text ?? cardInfoFace.value?.oracle_text ?? '',
+);
+const cardInfoFlavorText = computed(() => cardInfoFace.value?.flavor_text ?? '');
+const cardInfoImageNormalUrl = computed(() =>
+  withFaceOrder(cardInfoDetails.value?.image_normal_url, cardInfoFaceOrder.value),
+);
+const cardInfoImageNativeUrl = computed(() =>
+  withFaceOrder(cardInfoDetails.value?.image_native_url, cardInfoFaceOrder.value),
+);
+const cardInfoStats = computed(() => {
+  if (cardInfoFace.value?.power) {
+    return { label: 'P/T', value: `${cardInfoFace.value.power}/${cardInfoFace.value.toughness ?? ''}` };
+  }
+  if (cardInfoFace.value?.loyalty) {
+    return { label: 'Loyalty', value: cardInfoFace.value.loyalty };
+  }
+  if (cardInfoFace.value?.defense) {
+    return { label: 'Defense', value: cardInfoFace.value.defense };
+  }
+  return null;
+});
+const cardInfoLegalities = computed(() =>
+  Object.entries(cardInfoDetails.value?.card.legalities ?? {})
+    .filter(([, legality]) => legality !== 'not_legal')
+    .map(([format, legality]) => ({ format, legality })),
 );
 
-function usePrintingDefaults(preferredLanguageCode?: string): void {
-  const firstSet = sets.value[0];
+function usePrintingDefaults(languagePreference?: string): void {
+  const firstSet =
+    (languagePreference
+      ? sets.value.find((set) =>
+          printings.value.some(
+            (printing) =>
+              printing.set_code === set.code &&
+              (printing.language_code === languagePreference ||
+                printing.localizations.some(
+                  (localization) => localization.code === languagePreference,
+                )),
+          ),
+        )
+      : undefined) ?? sets.value[0];
   if (!firstSet) {
     return;
   }
   selectedSetCode.value = firstSet.code;
-  selectSet(firstSet, preferredLanguageCode);
+  selectSet(firstSet);
 }
 
-function selectSet(set: SetOption, preferredLanguageCode?: string): void {
+function selectSet(set: SetOption): void {
   selectedSetCode.value = set.code;
   const availableLanguages = new Set(
-    printings.value
-      .filter((printing) => printing.set_code === set.code)
-      .map((printing) => printing.language_code),
+    printings.value.flatMap((printing) =>
+      printing.set_code === set.code
+        ? [printing.language_code, ...printing.localizations.map((localization) => localization.code)]
+        : [],
+    ),
   );
   languageCode.value =
-    (preferredLanguageCode && availableLanguages.has(preferredLanguageCode)
-      ? preferredLanguageCode
+    (preferredLanguageCode.value && availableLanguages.has(preferredLanguageCode.value)
+      ? preferredLanguageCode.value
       : languages.value[0]?.code) ?? '';
   cardNumber.value = numbers.value[0] ?? '';
   finishId.value = finishes.value[0]?.id ?? null;
+}
+
+function selectLanguage(value: string): void {
+  preferredLanguageCode.value = value;
+  languageCode.value = value;
 }
 
 async function chooseSuggestion(suggestion: CardSuggestion): Promise<void> {
@@ -146,6 +235,7 @@ async function chooseSuggestion(suggestion: CardSuggestion): Promise<void> {
   try {
     const options = await listWorkspacePrintings(suggestion.oracle_id, suggestion.language_code);
     printings.value = options.printings;
+    preferredLanguageCode.value = options.preferred_language_code;
     usePrintingDefaults(options.preferred_language_code);
   } catch (requestError) {
     error.value = getApiErrorMessage(requestError, 'Printing options are unavailable');
@@ -166,6 +256,27 @@ function cancelSearchDraft(): void {
   search.value = confirmedName;
   suggestions.value = [];
   suggestionsOpen.value = false;
+}
+
+function clearCardSearch(): void {
+  if (suggestTimer !== undefined) {
+    window.clearTimeout(suggestTimer);
+  }
+  suppressNextSuggestionRefresh = Boolean(search.value);
+  search.value = '';
+  suggestions.value = [];
+  suggestionsOpen.value = false;
+  selectedAlias.value = null;
+  printings.value = [];
+  selectedSetCode.value = '';
+  languageCode.value = '';
+  preferredLanguageCode.value = '';
+  cardNumber.value = '';
+  finishId.value = null;
+  details.value = null;
+  detailsRequestId += 1;
+  selectedFaceOrder.value = 0;
+  message.value = '';
 }
 
 function reopenSuggestions(): void {
@@ -194,6 +305,7 @@ async function refreshSuggestions(): Promise<void> {
 }
 
 async function refreshDetails(): Promise<void> {
+  const requestId = ++detailsRequestId;
   if (!selectedPrinting.value) {
     details.value = null;
     return;
@@ -202,16 +314,32 @@ async function refreshDetails(): Promise<void> {
   selectedFaceOrder.value = 0;
   error.value = '';
   try {
-    details.value = await getWorkspacePrintingDetails(selectedPrinting.value.id);
+    const nextDetails = await getWorkspacePrintingDetails(
+      selectedPrinting.value.id,
+      languageCode.value,
+    );
+    if (requestId === detailsRequestId) {
+      details.value = nextDetails;
+    }
   } catch (requestError) {
+    if (requestId !== detailsRequestId) {
+      return;
+    }
     details.value = null;
     error.value = getApiErrorMessage(requestError, 'Card preview is unavailable');
   } finally {
-    loadingDetails.value = false;
+    if (requestId === detailsRequestId) {
+      loadingDetails.value = false;
+    }
   }
 }
 
 async function refreshInventory(): Promise<void> {
+  selectedInventoryItem.value = null;
+  cardInfoDetails.value = null;
+  if (activeTab.value === 'card') {
+    activeTab.value = 'add';
+  }
   if (selectedCollectionId.value === null) {
     inventory.value = [];
     return;
@@ -220,6 +348,22 @@ async function refreshInventory(): Promise<void> {
     inventory.value = await listWorkspaceCollectionItems(selectedCollectionId.value);
   } catch (requestError) {
     error.value = getApiErrorMessage(requestError, 'Collection items are unavailable');
+  }
+}
+
+async function selectInventoryItem(item: WorkspaceCollectionItem): Promise<void> {
+  selectedInventoryItem.value = item;
+  activeTab.value = 'card';
+  loadingCardInfo.value = true;
+  cardInfoFaceOrder.value = 0;
+  error.value = '';
+  try {
+    cardInfoDetails.value = await getWorkspacePrintingDetails(item.printing_id, item.language_code);
+  } catch (requestError) {
+    cardInfoDetails.value = null;
+    error.value = getApiErrorMessage(requestError, 'Card info is unavailable');
+  } finally {
+    loadingCardInfo.value = false;
   }
 }
 
@@ -234,6 +378,7 @@ async function addCard(): Promise<void> {
     await addWorkspaceCollectionItem(selectedCollectionId.value, {
       printing_id: selectedPrinting.value.id,
       finish_id: finishId.value,
+      language_code: languageCode.value,
       condition_code: condition.value,
       quantity: quantity.value,
     });
@@ -246,8 +391,9 @@ async function addCard(): Promise<void> {
   }
 }
 
-function openImageDialog(): void {
-  if (imageNativeUrl.value) {
+function openImageDialog(url: string): void {
+  if (url) {
+    dialogImageUrl.value = url;
     imageDialog.value?.showModal();
   }
 }
@@ -265,11 +411,19 @@ watch([search, exactMatch], () => {
 
 watch(selectedCollectionId, refreshInventory);
 
+watch(imageNormalUrl, (url) => {
+  previewImageLoading.value = Boolean(url);
+});
+
+watch(cardInfoImageNormalUrl, (url) => {
+  cardInfoImageLoading.value = Boolean(url);
+});
+
 watch(languageCode, () => {
   cardNumber.value = numbers.value.includes(cardNumber.value) ? cardNumber.value : (numbers.value[0] ?? '');
 });
 
-watch(selectedPrinting, () => {
+watch([selectedPrinting, languageCode], () => {
   finishId.value = finishes.value.some((finish) => finish.id === finishId.value)
     ? finishId.value
     : (finishes.value[0]?.id ?? null);
@@ -325,24 +479,56 @@ onUnmounted(() => {
         <h1>{{ selectedCollection?.name ?? 'Collection' }}</h1>
         <p>{{ totalCards }} cards in collection</p>
       </div>
-      <div class="inventory-table">
-        <div class="inventory-row inventory-header">
-          <span>Qty</span><span>Name</span><span>Type</span><span>Set</span><span>Cost</span>
-        </div>
-        <div v-for="item in inventory" :key="item.id" class="inventory-row">
-          <strong>{{ item.quantity }}</strong>
-          <span>{{ item.name }}</span>
-          <span>{{ item.type }}</span>
-          <span>{{ item.set_code }}</span>
-          <span>{{ item.mana_cost || '—' }}</span>
-        </div>
-      </div>
+      <DataTable
+        v-model:selection="selectedInventoryItem"
+        :value="inventory"
+        class="inventory-table"
+        data-key="id"
+        paginator
+        :rows="100"
+        selection-mode="single"
+        :meta-key-selection="false"
+        striped-rows
+        @row-select="selectInventoryItem($event.data)"
+      >
+        <template #empty>No cards in this collection.</template>
+        <Column field="quantity" header="Qty" />
+        <Column field="quantity" header="Avail." />
+        <Column field="name" header="Name" />
+        <Column field="set_code" header="Set">
+          <template #body="{ data }">
+            <i
+              :class="['ss', `ss-${data.keyrune_code.toLowerCase()}`, keyruneRarityClass(data.rarity)]"
+              :title="`${data.set_code} · ${data.rarity}`"
+              :aria-label="`${data.set_code} ${data.rarity}`"
+            />
+          </template>
+        </Column>
+        <Column header="Details">
+          <template #body="{ data }">
+            #{{ data.collector_number }} · {{ data.language_code.toUpperCase() }} · {{ data.finish }} ·
+            {{ data.condition_code }}
+          </template>
+        </Column>
+        <Column field="mana_cost" header="Cost">
+          <template #body="{ data }">
+            <ScryfallSymbolsText v-if="data.mana_cost" :text="data.mana_cost" />
+            <template v-else>—</template>
+          </template>
+        </Column>
+      </DataTable>
     </main>
 
     <aside class="inspector-pane">
       <div class="inspector-tabs">
         <Button label="Collection info" :severity="activeTab === 'info' ? undefined : 'secondary'" @click="activeTab = 'info'" />
         <Button label="Add cards" :severity="activeTab === 'add' ? undefined : 'secondary'" @click="activeTab = 'add'" />
+        <Button
+          v-if="selectedInventoryItem"
+          label="Card info"
+          :severity="activeTab === 'card' ? undefined : 'secondary'"
+          @click="activeTab = 'card'"
+        />
       </div>
 
       <p v-if="error" class="empty-state">{{ error }}</p>
@@ -355,6 +541,80 @@ onUnmounted(() => {
         <label class="toggle-field"><Checkbox :model-value="selectedCollection?.is_default" binary /><span>Primary collection</span></label>
         <label class="toggle-field"><ToggleSwitch :model-value="selectedCollection?.is_wishlist" /><span>Wishlist</span></label>
         <label class="field"><span>Note</span><Textarea :model-value="selectedCollection?.note ?? ''" rows="4" /></label>
+      </section>
+
+      <section v-else-if="activeTab === 'card'" class="inspector-content card-info-inspector">
+        <h2>Card info</h2>
+        <template v-if="selectedInventoryItem">
+          <p v-if="loadingCardInfo" class="empty-state">Loading card info...</p>
+          <template v-else-if="cardInfoDetails">
+            <div class="selected-alias">{{ cardInfoName }} ({{ selectedInventoryItem.language }})</div>
+            <button
+              type="button"
+              class="card-image-button"
+              aria-label="View selected card image at native resolution"
+              :disabled="!cardInfoImageNativeUrl"
+              @click="openImageDialog(cardInfoImageNativeUrl)"
+            >
+              <img
+                v-if="cardInfoImageNormalUrl"
+                :src="cardInfoImageNormalUrl"
+                :alt="cardInfoName"
+                :class="{ 'loading-image': cardInfoImageLoading }"
+                @load="cardInfoImageLoading = false"
+                @error="cardInfoImageLoading = false"
+              />
+              <span v-if="cardInfoImageLoading" class="card-image-loading-overlay">
+                <ProgressSpinner />
+              </span>
+              <span v-else-if="!cardInfoImageNormalUrl">Image unavailable</span>
+            </button>
+            <div v-if="cardInfoFaces.length > 1" class="number-toggle-group card-face-toggle">
+              <button
+                v-for="(face, faceOrder) in cardInfoFaces"
+                :key="`${faceOrder}-${face.name}`"
+                type="button"
+                :class="{ selected: cardInfoFaceOrder === faceOrder }"
+                @click="cardInfoFaceOrder = faceOrder"
+              >
+                {{ face.printed_name ?? face.name ?? `Side ${faceOrder + 1}` }}
+              </button>
+            </div>
+            <div class="card-rules-text">
+              <strong>{{ cardInfoType }}</strong>
+              <ScryfallSymbolsText v-if="cardInfoManaCost" :text="cardInfoManaCost" />
+              <ScryfallSymbolsText v-if="cardInfoText" :text="cardInfoText" />
+              <em v-if="cardInfoFlavorText">{{ cardInfoFlavorText }}</em>
+            </div>
+            <div class="card-info-grid">
+              <div>
+                <span>Set</span>
+                <strong>{{ cardInfoDetails.card.set_name ?? selectedInventoryItem.set_code }}</strong>
+              </div>
+              <div><span>Collector number</span><strong>#{{ selectedInventoryItem.collector_number }}</strong></div>
+              <div><span>Rarity</span><strong>{{ selectedInventoryItem.rarity }}</strong></div>
+              <div><span>Language</span><strong>{{ selectedInventoryItem.language }}</strong></div>
+              <div v-if="cardInfoDetails.card.cmc != null"><span>Mana value</span><strong>{{ cardInfoDetails.card.cmc }}</strong></div>
+              <div v-if="cardInfoStats"><span>{{ cardInfoStats.label }}</span><strong>{{ cardInfoStats.value }}</strong></div>
+              <div v-if="cardInfoFace?.artist ?? cardInfoDetails.card.artist"><span>Artist</span><strong>{{ cardInfoFace?.artist ?? cardInfoDetails.card.artist }}</strong></div>
+              <div v-if="cardInfoDetails.card.released_at"><span>Released</span><strong>{{ cardInfoDetails.card.released_at }}</strong></div>
+              <div><span>Finish</span><strong>{{ selectedInventoryItem.finish }}</strong></div>
+              <div><span>Condition</span><strong>{{ selectedInventoryItem.condition_code }}</strong></div>
+            </div>
+            <div v-if="cardInfoLegalities.length" class="field">
+              <span>Legalities</span>
+              <div class="legality-list">
+                <span
+                  v-for="entry in cardInfoLegalities"
+                  :key="entry.format"
+                  :class="['legality-badge', `legality-${entry.legality}`]"
+                >
+                  {{ entry.format }}
+                </span>
+              </div>
+            </div>
+          </template>
+        </template>
       </section>
 
       <section v-else class="inspector-content add-card-inspector">
@@ -375,8 +635,8 @@ onUnmounted(() => {
                   icon="pi pi-times"
                   severity="secondary"
                   text
-                  aria-label="Cancel card search"
-                  @click="cancelSearchDraft"
+                  aria-label="Clear card search"
+                  @click="clearCardSearch"
                 />
               </span>
             </label>
@@ -392,14 +652,25 @@ onUnmounted(() => {
         <template v-if="selectedAlias && selectedPrinting">
           <div class="card-config-layout">
             <div class="card-image-wrap">
-              <div class="selected-alias">{{ cardName }} ({{ selectedAlias.language }})</div>
-              <button type="button" class="card-image-button" aria-label="View card image at native resolution" :disabled="!imageNativeUrl" @click="openImageDialog">
-                <img v-if="imageNormalUrl" :src="imageNormalUrl" :alt="cardName" />
-                <span v-else>{{ loadingDetails ? 'Loading image…' : 'Image unavailable' }}</span>
+              <div class="selected-alias">{{ cardName }}</div>
+              <ScryfallSymbolsText v-if="cardManaCost" class="selected-card-cost" :text="cardManaCost" />
+              <button type="button" class="card-image-button" aria-label="View card image at native resolution" :disabled="!imageNativeUrl" @click="openImageDialog(imageNativeUrl)">
+                <img
+                  v-if="imageNormalUrl"
+                  :src="imageNormalUrl"
+                  :alt="cardName"
+                  :class="{ 'loading-image': previewImageLoading }"
+                  @load="previewImageLoading = false"
+                  @error="previewImageLoading = false"
+                />
+                <span v-if="previewImageLoading" class="card-image-loading-overlay">
+                  <ProgressSpinner />
+                </span>
+                <span v-else-if="!imageNormalUrl">{{ loadingDetails ? 'Loading image…' : 'Image unavailable' }}</span>
               </button>
               <div class="card-rules-text">
                 <strong>{{ cardType }}</strong>
-                <span>{{ cardText }}</span>
+                <ScryfallSymbolsText :text="cardText" />
               </div>
               <div v-if="cardFaces.length > 1" class="number-toggle-group card-face-toggle">
                 <button
@@ -418,7 +689,7 @@ onUnmounted(() => {
               <div class="field">
                 <span>Set</span>
                 <div class="set-icon-grid">
-                  <button v-for="set in sets" :key="set.code" type="button" :aria-label="set.name" :class="{ selected: selectedSetCode === set.code }" @click="selectSet(set, languageCode)">
+                  <button v-for="set in sets" :key="set.code" type="button" :aria-label="set.name" :class="{ selected: selectedSetCode === set.code }" @click="selectSet(set)">
                     <i :class="`ss ss-${set.keyrune} ss-2x`" />
                   </button>
                 </div>
@@ -426,7 +697,7 @@ onUnmounted(() => {
               </div>
               <label class="field">
                 <span>Language</span>
-                <Select v-model="languageCode" :options="languages" option-label="name" option-value="code" />
+                <Select :model-value="languageCode" :options="languages" option-label="name" option-value="code" @update:model-value="selectLanguage" />
               </label>
               <div class="field">
                 <span>Card number</span>
@@ -454,7 +725,7 @@ onUnmounted(() => {
 
     <dialog ref="imageDialog" class="card-image-dialog" @click.self="imageDialog?.close()">
       <Button icon="pi pi-times" severity="secondary" text aria-label="Close full-size card image" @click="imageDialog?.close()" />
-      <img v-if="imageNativeUrl" :src="imageNativeUrl" alt="Selected card at native resolution" />
+      <img v-if="dialogImageUrl" :src="dialogImageUrl" alt="Selected card at native resolution" />
     </dialog>
   </section>
 </template>

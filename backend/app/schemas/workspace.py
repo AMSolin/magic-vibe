@@ -30,6 +30,7 @@ class PrintingRead(BaseModel):
     language: str
     rarity: str
     finishes: list[dict[str, int | str]]
+    localizations: list[dict[str, str]]
 
 
 class PrintingOptionsRead(BaseModel):
@@ -48,16 +49,20 @@ class CardDetailsRead(BaseModel):
 class WorkspaceCollectionItemCreate(BaseModel):
     printing_id: int
     finish_id: int
+    language_code: str | None = Field(default=None, min_length=2, max_length=3)
     condition_code: str = "NM"
     quantity: int = Field(default=1, ge=1)
 
 
 class WorkspaceCollectionItemRead(BaseModel):
     id: int
+    printing_id: int
     collection_id: int
     scryfall_id: str
     name: str
     set_code: str
+    keyrune_code: str
+    rarity: str
     collector_number: str
     language_code: str
     language: str

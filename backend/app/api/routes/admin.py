@@ -7,7 +7,13 @@ from sqlalchemy.orm import Session
 
 from app.db.app_data_session import get_app_data_db
 from app.models.app_data import AppSetting, CatalogImport
-from app.schemas.admin import CatalogImportRead, CatalogStatusRead, UserDataStatusRead
+from app.schemas.admin import (
+    CatalogImportRead,
+    CatalogStatusRead,
+    ScryfallSymbolsStatusRead,
+    UserDataStatusRead,
+)
+from app.services import scryfall
 from app.services.catalog_download import (
     ACTIVE_DOWNLOAD_STATUSES,
     CATALOG_SOURCE_NAME,
@@ -74,6 +80,24 @@ def get_user_data_status() -> UserDataStatusRead:
 def recreate_user_data() -> UserDataStatusRead:
     recreate_user_data_db()
     return _user_data_status()
+
+
+@router.get("/scryfall-symbols", response_model=ScryfallSymbolsStatusRead)
+def get_scryfall_symbols_status() -> dict:
+    return scryfall.get_symbols_status()
+
+
+@router.post("/scryfall-symbols/update", response_model=ScryfallSymbolsStatusRead)
+def update_scryfall_symbols() -> dict:
+    try:
+        return scryfall.update_symbols_cache()
+    except RuntimeError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except (OSError, ValueError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Scryfall symbols cache update failed: {error}",
+        ) from error
 
 
 @router.post(

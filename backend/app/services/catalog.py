@@ -18,6 +18,7 @@ def catalog_connection() -> Iterator[sqlite3.Connection]:
         raise FileNotFoundError("Catalog database is not installed")
     connection = sqlite3.connect(path)
     connection.row_factory = sqlite3.Row
+    connection.create_function("unicode_casefold", 1, lambda value: value.casefold(), deterministic=True)
     try:
         yield connection
     finally:
@@ -29,27 +30,45 @@ def _uuid_text(value: bytes) -> str:
 
 
 def search_card_names(query: str, *, exact: bool, limit: int = 15) -> list[dict]:
-    operator = "=" if exact else "like"
-    value = query if exact else f"%{query}%"
-    prefix = query if exact else f"{query}%"
+    normalized_query = query.casefold()
     with catalog_connection() as catalog:
-        rows = catalog.execute(
-            f"""
+        columns = {
+            row["name"]
+            for row in catalog.execute("pragma table_info(card_search_index)")
+        }
+        normalized_name = (
+            "normalized_name"
+            if "normalized_name" in columns
+            else "unicode_casefold(name)"
+        )
+        select_sql = """
             select
                 oracle_id, min(face_order) as face_order, language_code, name,
                 min(search_priority) as search_priority
             from card_search_index
-            where name {operator} ? collate nocase
+            where {match}
             group by oracle_id, language_code, name
             order by
                 search_priority,
-                case when name like ? collate nocase then 0 else 1 end,
                 name collate nocase,
                 language_code
             limit ?
-            """,
-            (value, prefix, limit),
-        ).fetchall()
+        """
+        if exact:
+            rows = catalog.execute(
+                select_sql.format(match=f"{normalized_name} = ?"),
+                (normalized_query, limit),
+            ).fetchall()
+        else:
+            rows = catalog.execute(
+                select_sql.format(match=f"{normalized_name} >= ? and {normalized_name} < ?"),
+                (normalized_query, f"{normalized_query}\U0010ffff", limit),
+            ).fetchall()
+            if not rows:
+                rows = catalog.execute(
+                    select_sql.format(match=f"{normalized_name} like ?"),
+                    (f"%{normalized_query}%", limit),
+                ).fetchall()
         languages = {
             row["code"]: row["name"]
             for row in catalog.execute("select code, name from languages")
@@ -94,14 +113,33 @@ def list_printings(oracle_id: str) -> list[dict]:
             """,
             (UUID(oracle_id).bytes,),
         ).fetchall()
+        localization_rows = catalog.execute(
+            """
+            select distinct f.printing_id, l.language_code as code, language.name
+            from card_printing_faces as f
+            join card_face_localizations as l on l.face_id = f.id
+            join languages as language on language.code = l.language_code
+            where f.printing_id in (
+                select id from card_printings where oracle_id = ?
+            )
+            order by l.language_code
+            """,
+            (UUID(oracle_id).bytes,),
+        ).fetchall()
     finishes: dict[int, list[dict[str, int | str]]] = {}
     for row in finish_rows:
         finishes.setdefault(row["printing_id"], []).append({"id": row["id"], "name": row["name"]})
+    localizations: dict[int, list[dict[str, str]]] = {}
+    for row in localization_rows:
+        localizations.setdefault(row["printing_id"], []).append(
+            {"code": row["code"], "name": row["name"]}
+        )
     return [
         {
             **dict(row),
             "scryfall_id": _uuid_text(row["scryfall_id"]),
             "finishes": finishes.get(row["id"], []),
+            "localizations": localizations.get(row["id"], []),
         }
         for row in rows
     ]
@@ -131,11 +169,12 @@ def get_printing_by_scryfall_id(scryfall_id: bytes) -> dict | None:
             """
             select
                 p.id, p.scryfall_id, p.set_code, p.collector_number,
-                p.language_code, p.name, f.mana_cost, f.type,
-                l.name as language
+                p.language_code, p.name, p.rarity, f.mana_cost, f.type,
+                l.name as language, s.keyrune_code
             from card_printings as p
             join card_printing_faces as f on f.printing_id = p.id and f.face_order = 0
             join languages as l on l.code = p.language_code
+            join sets as s on s.code = p.set_code
             where p.scryfall_id = ?
             """,
             (scryfall_id,),
@@ -143,6 +182,29 @@ def get_printing_by_scryfall_id(scryfall_id: bytes) -> dict | None:
     if row is None:
         return None
     return {**dict(row), "scryfall_id": _uuid_text(row["scryfall_id"])}
+
+
+def get_localized_printing_faces(printing_id: int, language_code: str | None = None) -> list[dict]:
+    with catalog_connection() as catalog:
+        rows = catalog.execute(
+            """
+            select
+                f.face_order,
+                coalesce(l.face_name, l.name, f.face_name, p.name) as name,
+                coalesce(l.type, f.type) as type_line,
+                coalesce(l.text, f.text) as oracle_text,
+                l.flavor_text,
+                f.mana_cost
+            from card_printings as p
+            join card_printing_faces as f on f.printing_id = p.id
+            left join card_face_localizations as l
+                on l.face_id = f.id and l.language_code = coalesce(?, p.language_code)
+            where p.id = ?
+            order by f.face_order
+            """,
+            (language_code, printing_id),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def printing_supports_finish(printing_id: int, finish_id: int) -> bool:
@@ -157,6 +219,40 @@ def printing_supports_finish(printing_id: int, finish_id: int) -> bool:
             ).fetchone()
             is not None
         )
+
+
+def printing_supports_language(printing_id: int, language_code: str) -> bool:
+    with catalog_connection() as catalog:
+        return (
+            catalog.execute(
+                """
+                select 1
+                from card_printings as p
+                where
+                    p.id = ?
+                    and (
+                        p.language_code = ?
+                        or exists (
+                            select 1
+                            from card_printing_faces as f
+                            join card_face_localizations as l on l.face_id = f.id
+                            where f.printing_id = p.id and l.language_code = ?
+                        )
+                    )
+                """,
+                (printing_id, language_code, language_code),
+            ).fetchone()
+            is not None
+        )
+
+
+def language_name(language_code: str) -> str | None:
+    with catalog_connection() as catalog:
+        row = catalog.execute(
+            "select name from languages where code = ?",
+            (language_code,),
+        ).fetchone()
+    return row["name"] if row is not None else None
 
 
 def finish_name(finish_id: int) -> str | None:

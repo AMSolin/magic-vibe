@@ -25,3 +25,9 @@ class UserDataStatusRead(BaseModel):
     exists: bool
     file_size: int | None
     modified_at: int | None
+
+
+class ScryfallSymbolsStatusRead(BaseModel):
+    exists: bool
+    symbol_count: int
+    updated_at: int | None

@@ -9,18 +9,24 @@ import {
   type CatalogImport,
   getApiErrorMessage,
   getCatalogStatus,
+  getScryfallSymbolsStatus,
   getUserDataStatus,
   recreateUserData,
   startCatalogRebuild,
   startCatalogUpdate,
+  updateScryfallSymbols,
   type CatalogStatus,
+  type ScryfallSymbolsStatus,
   type UserDataStatus,
 } from '@/shared/api';
+import { reloadScryfallSymbols } from '@/shared/scryfallSymbols';
 
 const status = ref<CatalogStatus | null>(null);
 const userDataStatus = ref<UserDataStatus | null>(null);
+const scryfallSymbolsStatus = ref<ScryfallSymbolsStatus | null>(null);
 const loading = ref(false);
 const recreatingUserData = ref(false);
+const updatingScryfallSymbols = ref(false);
 const userDataDialogVisible = ref(false);
 const error = ref<string | null>(null);
 const refreshError = ref<string | null>(null);
@@ -38,6 +44,9 @@ const rebuildRunning = computed(
 const updateRunning = computed(() => catalogOperationRunning.value && !rebuildRunning.value);
 const userDataButtonLabel = computed(() =>
   userDataStatus.value?.exists ? 'Recreate user database' : 'Initialize user database',
+);
+const scryfallSymbolsButtonLabel = computed(() =>
+  scryfallSymbolsStatus.value?.exists ? 'Update cache' : 'Create cache',
 );
 
 let statusTimer: number | undefined;
@@ -85,15 +94,16 @@ async function loadStatus(showLoading = true): Promise<void> {
     loading.value = true;
   }
   try {
-    [status.value, userDataStatus.value] = await Promise.all([
+    [status.value, userDataStatus.value, scryfallSymbolsStatus.value] = await Promise.all([
       getCatalogStatus(),
       getUserDataStatus(),
+      getScryfallSymbolsStatus(),
     ]);
     error.value = null;
     refreshError.value = null;
   } catch (caughtError) {
     const message = getApiErrorMessage(caughtError, 'Application status is unavailable');
-    if (status.value === null && userDataStatus.value === null) {
+    if (status.value === null && userDataStatus.value === null && scryfallSymbolsStatus.value === null) {
       error.value = message;
     } else {
       refreshError.value = `${message}. Showing the last known status.`;
@@ -102,6 +112,19 @@ async function loadStatus(showLoading = true): Promise<void> {
     if (showLoading) {
       loading.value = false;
     }
+  }
+}
+
+async function refreshScryfallSymbols(): Promise<void> {
+  updatingScryfallSymbols.value = true;
+  error.value = null;
+  try {
+    scryfallSymbolsStatus.value = await updateScryfallSymbols();
+    await reloadScryfallSymbols();
+  } catch (caughtError) {
+    error.value = getApiErrorMessage(caughtError, 'Scryfall symbols cache could not be updated');
+  } finally {
+    updatingScryfallSymbols.value = false;
   }
 }
 
@@ -297,6 +320,44 @@ onUnmounted(() => {
             :disabled="catalogOperationRunning"
             :loading="updateRunning"
             @click="updateCatalog"
+          />
+        </div>
+      </section>
+
+      <section class="tool-panel">
+        <div class="section-header">
+          <h2>Scryfall Symbols Cache</h2>
+          <Message :severity="scryfallSymbolsStatus?.exists ? 'success' : 'warn'" size="small">
+            {{ scryfallSymbolsStatus?.exists ? 'Ready' : 'Not created' }}
+          </Message>
+        </div>
+
+        <Message severity="info">
+          Downloads card-symbol SVG files from Scryfall for local reuse throughout the application.
+          Existing cached files are retained indefinitely.
+        </Message>
+
+        <div class="metadata-grid">
+          <div class="field">
+            <span>Cache directory</span>
+            <strong>backend/data/cache/scryfall/symbols</strong>
+          </div>
+          <div class="field">
+            <span>Cached symbols</span>
+            <strong>{{ formatValue(scryfallSymbolsStatus?.symbol_count) }}</strong>
+          </div>
+          <div class="field">
+            <span>Last updated at</span>
+            <strong>{{ formatTimestamp(scryfallSymbolsStatus?.updated_at) }}</strong>
+          </div>
+        </div>
+
+        <div class="panel-actions">
+          <Button
+            icon="pi pi-download"
+            :label="scryfallSymbolsButtonLabel"
+            :loading="updatingScryfallSymbols"
+            @click="refreshScryfallSymbols"
           />
         </div>
       </section>

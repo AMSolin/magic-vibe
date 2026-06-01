@@ -196,6 +196,14 @@ a {
   gap: 12px;
 }
 
+.metadata-grid > * {
+  min-width: 0;
+}
+
+.metadata-grid strong {
+  overflow-wrap: anywhere;
+}
+
 .field,
 .dialog-fields {
   display: flex;
@@ -261,8 +269,8 @@ a {
 
 .collection-workspace {
   display: grid;
-  grid-template-columns: 220px minmax(430px, 1fr) minmax(380px, 0.85fr);
-  gap: 16px;
+  grid-template-columns: 200px minmax(560px, 1.35fr) minmax(340px, 0.7fr);
+  gap: 12px;
   min-height: calc(100vh - 130px);
 }
 
@@ -337,29 +345,49 @@ a {
   overflow-x: auto;
 }
 
-.inventory-row {
-  display: grid;
-  grid-template-columns: 44px minmax(150px, 1fr) minmax(180px, 1.3fr) 56px 80px;
-  gap: 8px;
-  min-width: 560px;
-  padding: 10px 8px;
-  border-bottom: 1px solid #e5e7eb;
-  font-size: 0.875rem;
+.inventory-table .p-datatable-thead > tr > th,
+.inventory-table .p-datatable-tbody > tr > td {
+  padding: 0.625rem 0.5rem;
 }
 
-.inventory-header {
-  color: #6b7280;
-  font-size: 0.75rem;
-  font-weight: 700;
-  text-transform: uppercase;
+.inventory-table .p-datatable-tbody > tr {
+  cursor: pointer;
+}
+
+.inventory-table .p-datatable-tbody > tr.p-datatable-row-selected > td {
+  background: #064e3b;
+  color: #ffffff;
+}
+
+.inventory-table .ss {
+  font-size: 1.55rem;
+  text-shadow:
+    -1px 0 #f3f4f6,
+    0 1px #f3f4f6,
+    1px 0 #f3f4f6,
+    0 -1px #f3f4f6;
+}
+
+.scryfall-symbols-text {
+  white-space: pre-wrap;
+}
+
+.scryfall-symbol {
+  display: inline-block;
+  width: 1.05em;
+  height: 1.05em;
+  margin: 0 0.06em;
+  vertical-align: -0.16em;
 }
 
 .inspector-pane {
+  container-type: inline-size;
   gap: 16px;
 }
 
 .inspector-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -439,14 +467,31 @@ a {
   font-weight: 700;
 }
 
+.selected-card-cost {
+  display: block;
+  margin-top: 4px;
+}
+
 .card-config-layout {
   display: grid;
-  grid-template-columns: minmax(160px, 0.8fr) minmax(200px, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
 
+.card-image-wrap,
+.card-attributes {
+  min-width: 0;
+}
+
+.card-attributes .p-select,
+.card-attributes .p-inputnumber {
+  width: 100%;
+  min-width: 0;
+}
+
 .card-image-button {
+  position: relative;
   display: block;
   width: 100%;
   margin-top: 10px;
@@ -457,13 +502,33 @@ a {
   cursor: zoom-in;
 }
 
-.card-image-wrap img {
+.card-image-button img {
   display: block;
   width: 100%;
   min-height: 220px;
   border-radius: 8px;
   background: #111827;
   object-fit: contain;
+  transition: opacity 160ms ease;
+}
+
+.card-image-button img.loading-image {
+  opacity: 0.55;
+}
+
+.card-image-loading-overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: rgb(17 24 39 / 35%);
+  cursor: wait;
+}
+
+.card-image-loading-overlay .p-progressspinner {
+  width: 42px;
+  height: 42px;
 }
 
 .card-image-dialog {
@@ -500,6 +565,51 @@ a {
   color: #374151;
   font-size: 0.875rem;
   line-height: 1.4;
+}
+
+.card-info-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+  gap: 10px;
+}
+
+.card-info-grid div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.card-info-grid span {
+  color: #6b7280;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.legality-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.legality-badge {
+  padding: 3px 6px;
+  border-radius: 999px;
+  background: #d1fae5;
+  color: #065f46;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.legality-banned {
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.legality-restricted {
+  background: #fef3c7;
+  color: #92400e;
 }
 
 .set-icon-grid {
@@ -581,6 +691,12 @@ a {
   justify-content: flex-start;
 }
 
+@container (min-width: 430px) {
+  .card-config-layout {
+    grid-template-columns: minmax(150px, 0.8fr) minmax(180px, 1fr);
+  }
+}
+
 .success-text {
   color: #047857;
   font-size: 0.875rem;
@@ -589,7 +705,7 @@ a {
 
 @media (max-width: 1100px) {
   .collection-workspace {
-    grid-template-columns: 56px minmax(360px, 1fr) minmax(340px, 0.9fr);
+    grid-template-columns: 56px minmax(480px, 1.2fr) minmax(320px, 0.8fr);
   }
 
   .collection-sidebar:not(.collapsed) {

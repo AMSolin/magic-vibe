@@ -111,6 +111,7 @@ create table card_search_index (
     face_order      integer not null check(face_order >= 0),
     language_code   text not null references languages(code),
     name            text not null collate nocase,
+    normalized_name text not null,
     type            text not null,
     text            text not null,
     mana_value      real not null,
@@ -176,6 +177,8 @@ create index idx_card_face_localizations_language
     on card_face_localizations (language_code, face_id);
 create index idx_card_search_name
     on card_search_index (name collate nocase);
+create index idx_card_search_normalized_name
+    on card_search_index (normalized_name);
 create index idx_card_search_oracle
     on card_search_index (oracle_id);
 create index idx_card_search_language
@@ -225,6 +228,7 @@ def _create_catalog(source_path: Path, catalog_path: Path) -> int:
     catalog_path.unlink(missing_ok=True)
     source = sqlite3.connect(f"file:{source_path.as_posix()}?mode=ro", uri=True)
     catalog = sqlite3.connect(catalog_path)
+    catalog.create_function("unicode_casefold", 1, lambda value: value.casefold(), deterministic=True)
     catalog.execute("pragma foreign_keys = on")
     catalog.execute("pragma journal_mode = off")
     catalog.execute("pragma synchronous = off")
@@ -448,7 +452,7 @@ def _create_catalog(source_path: Path, catalog_path: Path) -> int:
         catalog.execute(
             """
             insert or ignore into card_search_index (
-                oracle_id, face_order, language_code, name, type, text,
+                oracle_id, face_order, language_code, name, normalized_name, type, text,
                 mana_value, colors, color_identity, keywords, search_priority
             )
             select
@@ -456,6 +460,7 @@ def _create_catalog(source_path: Path, catalog_path: Path) -> int:
                 0,
                 p.language_code,
                 p.name,
+                unicode_casefold(p.name),
                 f.type,
                 f.text,
                 f.mana_value,
@@ -475,7 +480,7 @@ def _create_catalog(source_path: Path, catalog_path: Path) -> int:
         catalog.execute(
             """
             insert or ignore into card_search_index (
-                oracle_id, face_order, language_code, name, type, text,
+                oracle_id, face_order, language_code, name, normalized_name, type, text,
                 mana_value, colors, color_identity, keywords, search_priority
             )
             select
@@ -483,6 +488,7 @@ def _create_catalog(source_path: Path, catalog_path: Path) -> int:
                 0,
                 l.language_code,
                 l.name,
+                unicode_casefold(l.name),
                 coalesce(l.type, f.type),
                 coalesce(l.text, f.text),
                 f.mana_value,

@@ -152,6 +152,19 @@ export type UserDataStatus = {
   modified_at: number | null;
 };
 
+export type ScryfallSymbolsStatus = {
+  exists: boolean;
+  symbol_count: number;
+  updated_at: number | null;
+};
+
+export type ScryfallSymbol = {
+  image_url: string;
+  label: string;
+};
+
+export type ScryfallSymbols = Record<string, ScryfallSymbol>;
+
 export type WorkspaceCollection = {
   id: number;
   name: string;
@@ -174,6 +187,11 @@ export type PrintingFinish = {
   name: string;
 };
 
+export type PrintingLocalization = {
+  code: string;
+  name: string;
+};
+
 export type CardPrinting = {
   id: number;
   scryfall_id: string;
@@ -186,6 +204,7 @@ export type CardPrinting = {
   language: string;
   rarity: string;
   finishes: PrintingFinish[];
+  localizations: PrintingLocalization[];
 };
 
 export type PrintingOptions = {
@@ -197,20 +216,40 @@ export type PrintingOptions = {
 export type ScryfallCard = {
   name?: string;
   printed_name?: string;
+  mana_cost?: string;
+  cmc?: number;
   type_line?: string;
   printed_type_line?: string;
   oracle_text?: string;
   printed_text?: string;
+  flavor_text?: string;
+  power?: string;
+  toughness?: string;
+  loyalty?: string;
+  defense?: string;
+  artist?: string;
+  set_name?: string;
+  released_at?: string;
+  collector_number?: string;
+  rarity?: string;
+  legalities?: Record<string, string>;
   card_faces?: ScryfallCardFace[];
 };
 
 export type ScryfallCardFace = {
   name?: string;
   printed_name?: string;
+  mana_cost?: string;
   type_line?: string;
   printed_type_line?: string;
   oracle_text?: string;
   printed_text?: string;
+  flavor_text?: string;
+  power?: string;
+  toughness?: string;
+  loyalty?: string;
+  defense?: string;
+  artist?: string;
 };
 
 export type CardDetails = {
@@ -222,10 +261,13 @@ export type CardDetails = {
 
 export type WorkspaceCollectionItem = {
   id: number;
+  printing_id: number;
   collection_id: number;
   scryfall_id: string;
   name: string;
   set_code: string;
+  keyrune_code: string;
+  rarity: string;
   collector_number: string;
   language_code: string;
   language: string;
@@ -468,6 +510,20 @@ export function recreateUserData(): Promise<UserDataStatus> {
   });
 }
 
+export function getScryfallSymbolsStatus(): Promise<ScryfallSymbolsStatus> {
+  return request<ScryfallSymbolsStatus>('/api/admin/scryfall-symbols');
+}
+
+export function updateScryfallSymbols(): Promise<ScryfallSymbolsStatus> {
+  return request<ScryfallSymbolsStatus>('/api/admin/scryfall-symbols/update', {
+    method: 'POST',
+  });
+}
+
+export function listWorkspaceSymbols(): Promise<ScryfallSymbols> {
+  return request<ScryfallSymbols>('/api/workspace/symbols');
+}
+
 export function listWorkspaceCollections(): Promise<WorkspaceCollection[]> {
   return request<WorkspaceCollection[]>('/api/workspace/collections');
 }
@@ -487,8 +543,14 @@ export function listWorkspacePrintings(
   );
 }
 
-export function getWorkspacePrintingDetails(printingId: number): Promise<CardDetails> {
-  return request<CardDetails>(`/api/workspace/printings/${printingId}/details`);
+export function getWorkspacePrintingDetails(
+  printingId: number,
+  languageCode?: string,
+): Promise<CardDetails> {
+  const params = languageCode
+    ? `?${new URLSearchParams({ language_code: languageCode }).toString()}`
+    : '';
+  return request<CardDetails>(`/api/workspace/printings/${printingId}/details${params}`);
 }
 
 export function listWorkspaceCollectionItems(
@@ -499,7 +561,13 @@ export function listWorkspaceCollectionItems(
 
 export function addWorkspaceCollectionItem(
   collectionId: number,
-  payload: { printing_id: number; finish_id: number; condition_code: string; quantity: number },
+  payload: {
+    printing_id: number;
+    finish_id: number;
+    language_code: string;
+    condition_code: string;
+    quantity: number;
+  },
 ): Promise<WorkspaceCollectionItem> {
   return request<WorkspaceCollectionItem>(`/api/workspace/collections/${collectionId}/items`, {
     method: 'POST',

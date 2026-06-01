@@ -212,3 +212,45 @@ def test_user_data_recreate_initializes_database(
     assert response.json()["exists"] is True
     assert response.json()["file_size"] == len(b"user data")
     assert recreate_calls == [None]
+
+
+def test_scryfall_symbols_status_and_update(
+    app_data_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app_data_session
+    statuses = [
+        {"exists": False, "symbol_count": 0, "updated_at": None},
+        {"exists": True, "symbol_count": 82, "updated_at": 1_780_275_600},
+    ]
+    monkeypatch.setattr("app.api.routes.admin.scryfall.get_symbols_status", lambda: statuses[0])
+    monkeypatch.setattr("app.api.routes.admin.scryfall.update_symbols_cache", lambda: statuses[1])
+
+    with TestClient(app) as client:
+        before = client.get("/api/admin/scryfall-symbols")
+        after = client.post("/api/admin/scryfall-symbols/update")
+
+    assert before.status_code == 200
+    assert before.json() == statuses[0]
+    assert after.status_code == 200
+    assert after.json() == statuses[1]
+
+
+def test_scryfall_symbols_update_reports_download_failure(
+    app_data_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app_data_session
+
+    def fail_update() -> dict:
+        raise OSError("Network unavailable")
+
+    monkeypatch.setattr("app.api.routes.admin.scryfall.update_symbols_cache", fail_update)
+
+    with TestClient(app) as client:
+        response = client.post("/api/admin/scryfall-symbols/update")
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": "Scryfall symbols cache update failed: Network unavailable"
+    }
