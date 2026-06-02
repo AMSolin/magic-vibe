@@ -192,6 +192,75 @@ def test_workspace_search_and_printing_options(workspace_client: TestClient) -> 
     ]
 
 
+def test_workspace_collection_settings_crud(workspace_client: TestClient) -> None:
+    players = workspace_client.get("/api/workspace/players")
+    assert players.status_code == 200
+    assert players.json() == [{"id": 1, "name": "Player", "is_default": True}]
+
+    created = workspace_client.post(
+        "/api/workspace/collections",
+        json={
+            "name": "Trade binder",
+            "player_id": 1,
+            "note": "For events",
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["player_id"] == 1
+    assert created.json()["is_default"] is False
+
+    updated = workspace_client.patch(
+        f"/api/workspace/collections/{created.json()['id']}",
+        json={
+            "name": "Main binder",
+            "note": "Updated note",
+            "is_default": True,
+            "created_at": 1_800_000_000,
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "Main binder"
+    assert updated.json()["note"] == "Updated note"
+    assert updated.json()["is_default"] is True
+    assert updated.json()["created_at"] == 1_800_000_000
+    collections = workspace_client.get("/api/workspace/collections").json()
+    assert [collection["is_default"] for collection in collections] == [False, True]
+
+    deleted = workspace_client.delete(f"/api/workspace/collections/{created.json()['id']}")
+    assert deleted.status_code == 204
+    assert workspace_client.get("/api/workspace/collections").json()[0]["is_default"] is True
+
+
+def test_workspace_collection_settings_validation(workspace_client: TestClient) -> None:
+    duplicate = workspace_client.post(
+        "/api/workspace/collections",
+        json={"name": "My collection", "player_id": 1},
+    )
+    update_primary_to_wishlist = workspace_client.patch(
+        "/api/workspace/collections/1",
+        json={"is_wishlist": True},
+    )
+    clear_only_primary = workspace_client.patch(
+        "/api/workspace/collections/1",
+        json={"is_default": False},
+    )
+    wishlist_primary = workspace_client.post(
+        "/api/workspace/collections",
+        json={"name": "Wishlist", "player_id": 1, "is_default": True, "is_wishlist": True},
+    )
+    delete_only_collection = workspace_client.delete("/api/workspace/collections/1")
+
+    assert duplicate.status_code == 409
+    assert update_primary_to_wishlist.status_code == 400
+    assert update_primary_to_wishlist.json()["detail"] == "Wishlist collection cannot be primary"
+    assert clear_only_primary.status_code == 400
+    assert clear_only_primary.json()["detail"] == "Cannot clear the only primary collection"
+    assert wishlist_primary.status_code == 400
+    assert wishlist_primary.json()["detail"] == "Wishlist collection cannot be primary"
+    assert delete_only_collection.status_code == 400
+    assert delete_only_collection.json()["detail"] == "Cannot delete the only collection"
+
+
 def test_workspace_suggestions_are_limited_to_fifteen(
     workspace_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,

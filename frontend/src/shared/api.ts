@@ -167,11 +167,27 @@ export type ScryfallSymbols = Record<string, ScryfallSymbol>;
 
 export type WorkspaceCollection = {
   id: number;
+  player_id: number;
   name: string;
   is_default: boolean;
   is_wishlist: boolean;
   note: string | null;
   created_at: number;
+};
+
+export type WorkspacePlayer = {
+  id: number;
+  name: string;
+  is_default: boolean;
+};
+
+export type WorkspaceCollectionWrite = {
+  name: string;
+  player_id: number;
+  note: string | null;
+  is_default: boolean;
+  is_wishlist: boolean;
+  created_at?: number;
 };
 
 export type CardSuggestion = {
@@ -527,6 +543,35 @@ export function listWorkspaceSymbols(): Promise<ScryfallSymbols> {
 
 export function listWorkspaceCollections(): Promise<WorkspaceCollection[]> {
   return request<WorkspaceCollection[]>('/api/workspace/collections');
+}
+
+export function listWorkspacePlayers(): Promise<WorkspacePlayer[]> {
+  return request<WorkspacePlayer[]>('/api/workspace/players');
+}
+
+export function createWorkspaceCollection(
+  payload: WorkspaceCollectionWrite,
+): Promise<WorkspaceCollection> {
+  return request<WorkspaceCollection>('/api/workspace/collections', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateWorkspaceCollection(
+  collectionId: number,
+  payload: WorkspaceCollectionWrite,
+): Promise<WorkspaceCollection> {
+  return request<WorkspaceCollection>(`/api/workspace/collections/${collectionId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteWorkspaceCollection(collectionId: number): Promise<void> {
+  return request<void>(`/api/workspace/collections/${collectionId}`, {
+    method: 'DELETE',
+  });
 }
 
 export function suggestWorkspaceCards(query: string, exact: boolean): Promise<CardSuggestion[]> {

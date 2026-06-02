@@ -1,8 +1,37 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class WorkspacePlayerRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    name: str
+    is_default: bool
+
+
+class WorkspaceCollectionCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    player_id: int
+    note: str | None = None
+    is_default: bool = False
+    is_wishlist: bool = False
+    created_at: int | None = Field(default=None, ge=0)
+
+
+class WorkspaceCollectionUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    player_id: int | None = None
+    note: str | None = None
+    is_default: bool | None = None
+    is_wishlist: bool | None = None
+    created_at: int | None = Field(default=None, ge=0)
 
 
 class WorkspaceCollectionRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
+    player_id: int
     name: str
     is_default: bool
     is_wishlist: bool

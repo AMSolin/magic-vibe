@@ -4,10 +4,15 @@ import Button from 'primevue/button';
 import Checkbox from 'primevue/checkbox';
 import Column from 'primevue/column';
 import DataTable from 'primevue/datatable';
+import DatePicker from 'primevue/datepicker';
+import Dialog from 'primevue/dialog';
 import InputNumber from 'primevue/inputnumber';
 import InputText from 'primevue/inputtext';
 import ProgressSpinner from 'primevue/progressspinner';
 import Select from 'primevue/select';
+import Tab from 'primevue/tab';
+import TabList from 'primevue/tablist';
+import Tabs from 'primevue/tabs';
 import Textarea from 'primevue/textarea';
 import ToggleSwitch from 'primevue/toggleswitch';
 
@@ -16,14 +21,18 @@ import type { CardPrintingSelection } from '@/components/CardPrintingSelectors.v
 import ScryfallSymbolsText from '@/components/ScryfallSymbolsText.vue';
 import {
   addWorkspaceCollectionItem,
+  createWorkspaceCollection,
+  deleteWorkspaceCollection,
   deleteWorkspaceCollectionItem,
   getApiErrorMessage,
   getWorkspacePrintingDetails,
   listWorkspaceCollectionItems,
   listWorkspaceCollections,
+  listWorkspacePlayers,
   listWorkspacePrintings,
   suggestWorkspaceCards,
   updateWorkspaceCollectionItem,
+  updateWorkspaceCollection,
 } from '@/shared/api';
 import type {
   CardDetails,
@@ -31,13 +40,27 @@ import type {
   CardSuggestion,
   WorkspaceCollection,
   WorkspaceCollectionItem,
+  WorkspacePlayer,
 } from '@/shared/api';
 
 const conditions = ['NM', 'SP', 'MP', 'HP', 'D'];
 const sidebarCollapsed = ref(false);
-const activeTab = ref<'info' | 'add' | 'card' | 'edit'>('add');
+const activeTab = ref<'info' | 'add' | 'card' | 'edit'>('info');
 const collections = ref<WorkspaceCollection[]>([]);
+const players = ref<WorkspacePlayer[]>([]);
 const selectedCollectionId = ref<number | null>(null);
+const collectionName = ref('');
+const collectionPlayerId = ref<number | null>(null);
+const collectionNote = ref('');
+const collectionIsDefault = ref(false);
+const collectionIsWishlist = ref(false);
+const collectionCreatedAt = ref<Date | null>(null);
+const createCollectionDialogVisible = ref(false);
+const newCollectionName = ref('');
+const newCollectionPlayerId = ref<number | null>(null);
+const newCollectionIsWishlist = ref(false);
+const createCollectionError = ref('');
+const collectionSaving = ref(false);
 const inventory = ref<WorkspaceCollectionItem[]>([]);
 const selectedInventoryItem = ref<WorkspaceCollectionItem | null>(null);
 const search = ref('');
@@ -157,6 +180,168 @@ const editChanges = computed(() => {
   ].filter(([, saved, changed]) => saved !== changed);
 });
 const editDirty = computed(() => editChanges.value.length > 0);
+const collectionCreatedAtTimestamp = computed(() =>
+  collectionCreatedAt.value ? Math.floor(collectionCreatedAt.value.getTime() / 1000) : null,
+);
+
+function timestampToDate(timestamp: number | null | undefined): Date | null {
+  return typeof timestamp === 'number' ? new Date(timestamp * 1000) : null;
+}
+
+function formatCollectionDate(timestamp: number | null | undefined): string {
+  if (typeof timestamp !== 'number') {
+    return '';
+  }
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(timestamp * 1000));
+}
+
+const collectionChanges = computed(() => {
+  const collection = selectedCollection.value;
+  if (!collection) {
+    return [];
+  }
+  const ownerName = (playerId: number | null) =>
+    players.value.find((player) => player.id === playerId)?.name ?? '';
+  return [
+    ['Name', collection.name, collectionName.value],
+    ['Owner', ownerName(collection.player_id), ownerName(collectionPlayerId.value)],
+    ['Created at', formatCollectionDate(collection.created_at), formatCollectionDate(collectionCreatedAtTimestamp.value)],
+    ['Primary collection', collection.is_default ? 'Yes' : 'No', collectionIsDefault.value ? 'Yes' : 'No'],
+    ['Wishlist', collection.is_wishlist ? 'Yes' : 'No', collectionIsWishlist.value ? 'Yes' : 'No'],
+    ['Note', collection.note ?? '', collectionNote.value],
+  ].filter(([, saved, changed]) => saved !== changed);
+});
+const collectionDirty = computed(() => collectionChanges.value.length > 0);
+const collectionCanSave = computed(() =>
+  collectionDirty.value &&
+  collectionPlayerId.value !== null &&
+  collectionCreatedAtTimestamp.value !== null &&
+  Boolean(collectionName.value.trim()),
+);
+
+function resetCollectionDraft(): void {
+  const collection = selectedCollection.value;
+  collectionName.value = collection?.name ?? '';
+  collectionPlayerId.value = collection?.player_id ?? null;
+  collectionNote.value = collection?.note ?? '';
+  collectionIsDefault.value = collection?.is_default ?? false;
+  collectionIsWishlist.value = collection?.is_wishlist ?? false;
+  collectionCreatedAt.value = timestampToDate(collection?.created_at);
+}
+
+function selectCollection(collectionId: number): void {
+  if (
+    selectedCollectionId.value !== collectionId &&
+    collectionDirty.value &&
+    !window.confirm('Discard unsaved collection changes?')
+  ) {
+    return;
+  }
+  selectedCollectionId.value = collectionId;
+  activeTab.value = 'info';
+}
+
+function openCreateCollectionDialog(): void {
+  if (collectionDirty.value && !window.confirm('Discard unsaved collection changes?')) {
+    return;
+  }
+  newCollectionName.value = '';
+  newCollectionPlayerId.value =
+    players.value.find((player) => player.is_default)?.id ?? players.value[0]?.id ?? null;
+  newCollectionIsWishlist.value = false;
+  createCollectionError.value = '';
+  createCollectionDialogVisible.value = true;
+}
+
+async function createCollection(): Promise<void> {
+  if (!newCollectionName.value.trim() || newCollectionPlayerId.value === null) {
+    return;
+  }
+  collectionSaving.value = true;
+  createCollectionError.value = '';
+  error.value = '';
+  try {
+    const created = await createWorkspaceCollection({
+      name: newCollectionName.value.trim(),
+      player_id: newCollectionPlayerId.value,
+      note: null,
+      is_default: false,
+      is_wishlist: newCollectionIsWishlist.value,
+    });
+    collections.value = await listWorkspaceCollections();
+    selectedCollectionId.value = created.id;
+    activeTab.value = 'info';
+    createCollectionDialogVisible.value = false;
+    createCollectionError.value = '';
+    message.value = 'Collection created';
+  } catch (requestError) {
+    createCollectionError.value = getApiErrorMessage(requestError, 'Collection could not be created');
+  } finally {
+    collectionSaving.value = false;
+  }
+}
+
+async function saveCollectionChanges(): Promise<void> {
+  const collection = selectedCollection.value;
+  if (
+    !collection ||
+    collectionPlayerId.value === null ||
+    collectionCreatedAtTimestamp.value === null ||
+    !collectionName.value.trim() ||
+    !collectionDirty.value
+  ) {
+    return;
+  }
+  collectionSaving.value = true;
+  error.value = '';
+  message.value = '';
+  try {
+    const updated = await updateWorkspaceCollection(collection.id, {
+      name: collectionName.value.trim(),
+      player_id: collectionPlayerId.value,
+      note: collectionNote.value.trim() || null,
+      is_default: collectionIsDefault.value,
+      is_wishlist: collectionIsWishlist.value,
+      created_at: collectionCreatedAtTimestamp.value,
+    });
+    collections.value = await listWorkspaceCollections();
+    selectedCollectionId.value = updated.id;
+    resetCollectionDraft();
+    message.value = 'Collection changes saved';
+  } catch (requestError) {
+    error.value = getApiErrorMessage(requestError, 'Collection changes could not be saved');
+  } finally {
+    collectionSaving.value = false;
+  }
+}
+
+async function deleteCollection(): Promise<void> {
+  const collection = selectedCollection.value;
+  if (
+    !collection ||
+    !window.confirm(`Delete ${collection.name} and all cards stored in it?`)
+  ) {
+    return;
+  }
+  collectionSaving.value = true;
+  error.value = '';
+  message.value = '';
+  try {
+    await deleteWorkspaceCollection(collection.id);
+    collections.value = await listWorkspaceCollections();
+    selectedCollectionId.value =
+      collections.value.find((item) => item.is_default)?.id ?? collections.value[0]?.id ?? null;
+    activeTab.value = 'info';
+    message.value = 'Collection deleted';
+  } catch (requestError) {
+    error.value = getApiErrorMessage(requestError, 'Collection could not be deleted');
+  } finally {
+    collectionSaving.value = false;
+  }
+}
 
 async function chooseSuggestion(suggestion: CardSuggestion): Promise<void> {
   selectedAlias.value = suggestion;
@@ -302,7 +487,7 @@ async function refreshInventory(): Promise<void> {
   editDetailsRequestId += 1;
   cardInfoDetails.value = null;
   if (activeTab.value === 'card' || activeTab.value === 'edit') {
-    activeTab.value = 'add';
+    activeTab.value = 'info';
   }
   if (selectedCollectionId.value === null) {
     inventory.value = [];
@@ -432,7 +617,7 @@ async function deleteCard(): Promise<void> {
   try {
     await deleteWorkspaceCollectionItem(selectedCollectionId.value, item.id);
     await refreshInventory();
-    activeTab.value = 'add';
+    activeTab.value = 'info';
     message.value = 'Card deleted';
   } catch (requestError) {
     error.value = getApiErrorMessage(requestError, 'Card could not be deleted');
@@ -460,6 +645,7 @@ watch([search, exactMatch], () => {
 });
 
 watch(selectedCollectionId, refreshInventory);
+watch(selectedCollectionId, resetCollectionDraft);
 
 watch(imageNormalUrl, (url) => {
   previewImageLoading.value = Boolean(url);
@@ -483,6 +669,7 @@ watch(editSelection, () => {
 
 onMounted(async () => {
   document.addEventListener('click', handleDocumentClick);
+  players.value = await listWorkspacePlayers();
   collections.value = await listWorkspaceCollections();
   selectedCollectionId.value =
     collections.value.find((collection) => collection.is_default)?.id ?? collections.value[0]?.id ?? null;
@@ -511,16 +698,15 @@ onUnmounted(() => {
             :key="collection.id"
             type="button"
             :class="{ selected: selectedCollectionId === collection.id }"
-            @click="selectedCollectionId = collection.id"
+            @click="selectCollection(collection.id)"
           >
             <span>{{ collection.name }}</span>
             <i v-if="selectedCollectionId === collection.id" class="pi pi-check" />
           </button>
         </div>
         <div class="sidebar-actions">
-          <Button icon="pi pi-plus" label="Add" size="small" />
-          <Button icon="pi pi-pencil" label="Rename" size="small" severity="secondary" />
-          <Button icon="pi pi-trash" label="Delete" size="small" severity="secondary" />
+          <Button icon="pi pi-plus" label="Add" size="small" @click="openCreateCollectionDialog" />
+          <Button icon="pi pi-trash" label="Delete" size="small" severity="danger" @click="deleteCollection" />
         </div>
       </template>
     </aside>
@@ -571,32 +757,70 @@ onUnmounted(() => {
     </main>
 
     <aside class="inspector-pane">
-      <div class="inspector-tabs">
-        <Button label="Collection info" :severity="activeTab === 'info' ? undefined : 'secondary'" @click="activeTab = 'info'" />
-        <Button label="Add cards" :severity="activeTab === 'add' ? undefined : 'secondary'" @click="activeTab = 'add'" />
-        <Button
-          v-if="selectedInventoryItem"
-          label="Card info"
-          :severity="activeTab === 'card' ? undefined : 'secondary'"
-          @click="activeTab = 'card'"
-        />
-        <Button
-          v-if="selectedInventoryItem"
-          label="Edit card"
-          :severity="activeTab === 'edit' ? undefined : 'secondary'"
-          @click="activeTab = 'edit'"
-        />
-      </div>
+      <Tabs v-model:value="activeTab" class="inspector-tabs">
+        <TabList>
+          <Tab value="info">Collection info</Tab>
+          <Tab value="add">Add cards</Tab>
+          <Tab v-if="selectedInventoryItem" value="card">Card info</Tab>
+          <Tab v-if="selectedInventoryItem" value="edit">Edit card</Tab>
+        </TabList>
+      </Tabs>
 
-      <p v-if="error" class="empty-state">{{ error }}</p>
+      <p v-if="error" class="panel-error" role="alert">
+        <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+        <span>{{ error }}</span>
+      </p>
 
       <section v-if="activeTab === 'info'" class="inspector-content">
-        <label class="field"><span>Name</span><InputText :model-value="selectedCollection?.name" /></label>
-        <label class="field"><span>Owner</span><Select model-value="Player" :options="['Player']" /></label>
-        <label class="field"><span>Created at</span><InputText :model-value="String(selectedCollection?.created_at ?? '')" /></label>
-        <label class="toggle-field"><Checkbox :model-value="selectedCollection?.is_default" binary /><span>Primary collection</span></label>
-        <label class="toggle-field"><ToggleSwitch :model-value="selectedCollection?.is_wishlist" /><span>Wishlist</span></label>
-        <label class="field"><span>Note</span><Textarea :model-value="selectedCollection?.note ?? ''" rows="4" /></label>
+        <label class="field"><span>Name</span><InputText v-model="collectionName" /></label>
+        <label class="field">
+          <span>Owner</span>
+          <Select v-model="collectionPlayerId" :options="players" option-label="name" option-value="id" />
+        </label>
+        <label class="field">
+          <span>Created at</span>
+          <DatePicker
+            v-model="collectionCreatedAt"
+            date-format="yy-mm-dd"
+            hour-format="24"
+            show-icon
+            show-time
+          />
+        </label>
+        <label class="toggle-field">
+          <ToggleSwitch v-model="collectionIsDefault" />
+          <span>Primary collection</span>
+        </label>
+        <label class="toggle-field">
+          <ToggleSwitch v-model="collectionIsWishlist" />
+          <span>Wishlist</span>
+        </label>
+        <label class="field"><span>Note</span><Textarea v-model="collectionNote" rows="4" /></label>
+        <details v-if="collectionDirty" class="unsaved-changes">
+          <summary>Unsaved changes <span>Show details</span></summary>
+          <div v-for="[label, saved, changed] in collectionChanges" :key="label" class="change-row">
+            <strong>{{ label }}</strong>
+            <span>{{ saved || 'Empty' }}</span>
+            <i class="pi pi-arrow-right" />
+            <span>{{ changed || 'Empty' }}</span>
+          </div>
+        </details>
+        <div class="panel-actions edit-actions">
+          <span v-if="message" class="success-text">{{ message }}</span>
+          <Button
+            icon="pi pi-save"
+            label="Save changes"
+            :disabled="!collectionCanSave"
+            :loading="collectionSaving"
+            @click="saveCollectionChanges"
+          />
+          <Button
+            label="Discard changes"
+            severity="secondary"
+            :disabled="!collectionDirty"
+            @click="resetCollectionDraft"
+          />
+        </div>
       </section>
 
       <section v-else-if="activeTab === 'card'" class="inspector-content card-info-inspector">
@@ -841,5 +1065,35 @@ onUnmounted(() => {
       <Button icon="pi pi-times" severity="secondary" text aria-label="Close full-size card image" @click="imageDialog?.close()" />
       <img v-if="dialogImageUrl" :src="dialogImageUrl" alt="Selected card at native resolution" />
     </dialog>
+
+    <Dialog v-model:visible="createCollectionDialogVisible" modal header="Create collection">
+      <div class="dialog-fields">
+        <label class="field"><span>Name</span><InputText v-model="newCollectionName" autofocus /></label>
+        <label class="field">
+          <span>Owner</span>
+          <Select v-model="newCollectionPlayerId" :options="players" option-label="name" option-value="id" />
+        </label>
+        <label class="toggle-field">
+          <ToggleSwitch v-model="newCollectionIsWishlist" />
+          <span>Wishlist</span>
+        </label>
+        <p v-if="createCollectionError" class="panel-error" role="alert">
+          <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+          <span>{{ createCollectionError }}</span>
+        </p>
+      </div>
+      <template #footer>
+        <div class="dialog-actions">
+          <Button label="Cancel" severity="secondary" @click="createCollectionDialogVisible = false" />
+          <Button
+            icon="pi pi-plus"
+            label="Create collection"
+            :disabled="!newCollectionName.trim() || newCollectionPlayerId === null"
+            :loading="collectionSaving"
+            @click="createCollection"
+          />
+        </div>
+      </template>
+    </Dialog>
   </section>
 </template>

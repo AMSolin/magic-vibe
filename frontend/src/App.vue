@@ -1,5 +1,19 @@
 <script setup lang="ts">
+import { ref, watch } from 'vue';
+import Button from 'primevue/button';
 import Menubar from 'primevue/menubar';
+
+const themeStorageKey = 'magic-explorer-theme';
+const isDarkTheme = ref(localStorage.getItem(themeStorageKey) === 'dark');
+
+watch(
+  isDarkTheme,
+  (isDark) => {
+    document.documentElement.classList.toggle('app-dark', isDark);
+    localStorage.setItem(themeStorageKey, isDark ? 'dark' : 'light');
+  },
+  { immediate: true },
+);
 
 const items = [
   { label: 'Collection', icon: 'pi pi-box', route: '/' },
@@ -22,6 +36,16 @@ const items = [
             <span>{{ item.label }}</span>
           </a>
         </RouterLink>
+      </template>
+      <template #end>
+        <Button
+          :aria-label="isDarkTheme ? 'Switch to light theme' : 'Switch to dark theme'"
+          :icon="isDarkTheme ? 'pi pi-sun' : 'pi pi-moon'"
+          :title="isDarkTheme ? 'Switch to light theme' : 'Switch to dark theme'"
+          rounded
+          text
+          @click="isDarkTheme = !isDarkTheme"
+        />
       </template>
     </Menubar>
 

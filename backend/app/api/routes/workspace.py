@@ -4,18 +4,22 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.user_data_session import get_user_data_db
-from app.models.user_data import Collection, CollectionItem
+from app.models.user_data import Collection, CollectionItem, Deck, DeckItem, Player
 from app.schemas.workspace import (
     CardDetailsRead,
     CardSuggestionRead,
     PrintingOptionsRead,
+    WorkspaceCollectionCreate,
     WorkspaceCollectionItemCreate,
     WorkspaceCollectionItemRead,
     WorkspaceCollectionItemUpdate,
     WorkspaceCollectionRead,
+    WorkspaceCollectionUpdate,
+    WorkspacePlayerRead,
 )
 from app.services import catalog, scryfall
 
@@ -150,9 +154,210 @@ def _validated_item_identity(
     return UUID(printing["scryfall_id"]).bytes, selected_language_code
 
 
+def _assign_replacement_default(
+    db: Session,
+    player_id: int,
+    excluded_collection_id: int,
+) -> Collection | None:
+    replacement = db.scalar(
+        select(Collection)
+        .where(
+            Collection.player_id == player_id,
+            Collection.id != excluded_collection_id,
+            Collection.is_wishlist.is_(False),
+        )
+        .order_by(Collection.created_at, Collection.id)
+        .limit(1)
+    )
+    if replacement is not None:
+        replacement.is_default = True
+    return replacement
+
+
+def _ensure_default_collection(db: Session, collection: Collection) -> None:
+    if not collection.is_default:
+        return
+    if collection.is_wishlist:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Wishlist collection cannot be primary",
+        )
+    for other_collection in db.scalars(
+        select(Collection).where(
+            Collection.player_id == collection.player_id,
+            Collection.id != collection.id,
+            Collection.is_default.is_(True),
+        )
+    ):
+        other_collection.is_default = False
+
+
+def _commit_collection(db: Session) -> None:
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Collection with this name already exists",
+        ) from error
+
+
+@router.get("/players", response_model=list[WorkspacePlayerRead])
+def list_players(db: Session = Depends(get_user_data_db)) -> list[Player]:
+    return list(db.scalars(select(Player).order_by(Player.created_at, Player.name)))
+
+
 @router.get("/collections", response_model=list[WorkspaceCollectionRead])
 def list_collections(db: Session = Depends(get_user_data_db)) -> list[Collection]:
     return list(db.scalars(select(Collection).order_by(Collection.created_at, Collection.name)))
+
+
+@router.post(
+    "/collections",
+    response_model=WorkspaceCollectionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_collection(
+    payload: WorkspaceCollectionCreate,
+    db: Session = Depends(get_user_data_db),
+) -> Collection:
+    if db.get(Player, payload.player_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
+    if payload.is_default and payload.is_wishlist:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Wishlist collection cannot be primary",
+        )
+    collection_data = payload.model_dump()
+    created_at = collection_data.pop("created_at")
+    if created_at is None:
+        created_at = int(time())
+    collection = Collection(**collection_data, created_at=created_at)
+    db.add(collection)
+    try:
+        db.flush()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Collection with this name already exists",
+        ) from error
+    if (
+        not collection.is_wishlist
+        and db.scalar(
+            select(Collection.id).where(
+                Collection.player_id == collection.player_id,
+                Collection.id != collection.id,
+                Collection.is_default.is_(True),
+            )
+        )
+        is None
+    ):
+        collection.is_default = True
+    _ensure_default_collection(db, collection)
+    _commit_collection(db)
+    db.refresh(collection)
+    return collection
+
+
+@router.patch("/collections/{collection_id}", response_model=WorkspaceCollectionRead)
+def update_collection(
+    collection_id: int,
+    payload: WorkspaceCollectionUpdate,
+    db: Session = Depends(get_user_data_db),
+) -> Collection:
+    collection = db.get(Collection, collection_id)
+    if collection is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    update_data = payload.model_dump(exclude_unset=True)
+    requested_player_id = update_data.get("player_id")
+    if requested_player_id is not None and db.get(Player, requested_player_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
+    previous_player_id = collection.player_id
+    was_default = collection.is_default
+    for field, value in update_data.items():
+        setattr(collection, field, value)
+    if collection.is_default and collection.is_wishlist:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Wishlist collection cannot be primary",
+        )
+    if was_default and (not collection.is_default or collection.player_id != previous_player_id):
+        replacement = _assign_replacement_default(db, previous_player_id, collection.id)
+        if replacement is None and collection.player_id == previous_player_id:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot clear the only primary collection",
+            )
+    _ensure_default_collection(db, collection)
+    _commit_collection(db)
+    db.refresh(collection)
+    return collection
+
+
+@router.delete("/collections/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_collection(
+    collection_id: int,
+    db: Session = Depends(get_user_data_db),
+) -> None:
+    collection = db.get(Collection, collection_id)
+    if collection is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    remaining_collections = list(
+        db.scalars(
+            select(Collection)
+            .where(Collection.id != collection.id)
+            .order_by(Collection.created_at, Collection.id)
+        )
+    )
+    if not remaining_collections:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot delete the only collection",
+        )
+    if db.scalar(select(Deck.id).where(Deck.wishlist_collection_id == collection.id)) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Collection is linked to a wish deck",
+        )
+    if (
+        db.scalar(
+            select(CollectionItem.id)
+            .join(DeckItem, DeckItem.collection_item_id == CollectionItem.id)
+            .where(CollectionItem.collection_id == collection.id)
+            .limit(1)
+        )
+        is not None
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Collection contains cards allocated to a deck",
+        )
+    replacement = None
+    if collection.is_default:
+        replacement = db.scalar(
+            select(Collection)
+            .where(
+                Collection.player_id == collection.player_id,
+                Collection.id != collection.id,
+                Collection.is_wishlist.is_(False),
+            )
+            .order_by(Collection.created_at, Collection.id)
+            .limit(1)
+        )
+        if replacement is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot delete the only regular collection",
+            )
+    db.delete(collection)
+    db.flush()
+    if replacement is not None:
+        replacement.is_default = True
+    db.commit()
 
 
 @router.get("/cards/suggest", response_model=list[CardSuggestionRead])
