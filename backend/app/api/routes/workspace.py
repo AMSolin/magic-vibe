@@ -9,7 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.db.user_data_session import get_user_data_db
-from app.models.user_data import Collection, CollectionItem, Deck, DeckItem, Player
+from app.models.user_data import Collection, CollectionItem, Deck, DeckItem, Player, WishDeckItem
 from app.schemas.workspace import (
     CardDetailsRead,
     CardSuggestionRead,
@@ -20,7 +20,10 @@ from app.schemas.workspace import (
     WorkspaceCollectionItemUpdate,
     WorkspaceCollectionRead,
     WorkspaceCollectionUpdate,
+    WorkspaceDeckCreate,
+    WorkspaceDeckItemRead,
     WorkspaceDeckRead,
+    WorkspaceDeckUpdate,
     WorkspacePlayerCreate,
     WorkspacePlayerRead,
     WorkspacePlayerUpdate,
@@ -256,6 +259,17 @@ def _commit_player(db: Session) -> None:
         ) from error
 
 
+def _commit_deck(db: Session) -> None:
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Deck with this name already exists for this owner and deck type",
+        ) from error
+
+
 @router.get("/players", response_model=list[WorkspacePlayerRead])
 def list_players(db: Session = Depends(get_user_data_db)) -> list[Player]:
     return list(db.scalars(select(Player).order_by(Player.created_at, Player.name)))
@@ -352,11 +366,6 @@ def delete_player(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="At least one player must remain",
         )
-    if db.scalar(select(Deck.id).where(Deck.player_id == player.id).limit(1)) is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Player has decks and cannot be deleted",
-        )
     affected_collections = list(
         db.scalars(
             select(Collection)
@@ -364,15 +373,23 @@ def delete_player(
             .order_by(Collection.created_at, Collection.name)
         )
     )
-    if affected_collections and not confirm_collection_owner_clear:
+    affected_decks = list(
+        db.scalars(
+            select(Deck)
+            .where(Deck.player_id == player.id)
+            .order_by(Deck.created_at, Deck.name)
+        )
+    )
+    if (affected_collections or affected_decks) and not confirm_collection_owner_clear:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail={
-                "message": "Player owns collections",
+                "message": "Player owns collections or decks",
                 "collections": [
                     {"id": collection.id, "name": collection.name}
                     for collection in affected_collections
                 ],
+                "decks": [{"id": deck.id, "name": deck.name} for deck in affected_decks],
             },
         )
     replacement = (
@@ -387,6 +404,8 @@ def delete_player(
     )
     for collection in affected_collections:
         collection.player_id = None
+    for deck in affected_decks:
+        deck.player_id = None
     db.delete(player)
     db.flush()
     if replacement is not None:
@@ -402,6 +421,116 @@ def list_collections(db: Session = Depends(get_user_data_db)) -> list[Collection
 @router.get("/decks", response_model=list[WorkspaceDeckRead])
 def list_decks(db: Session = Depends(get_user_data_db)) -> list[Deck]:
     return list(db.scalars(select(Deck).order_by(Deck.created_at, Deck.name)))
+
+
+@router.post("/decks", response_model=WorkspaceDeckRead, status_code=status.HTTP_201_CREATED)
+def create_deck(
+    payload: WorkspaceDeckCreate,
+    db: Session = Depends(get_user_data_db),
+) -> Deck:
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Name is required")
+    if payload.player_id is not None and db.get(Player, payload.player_id) is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
+    created_at = payload.created_at if payload.created_at is not None else int(time())
+    deck = Deck(
+        player_id=payload.player_id,
+        name=name,
+        note=payload.note,
+        is_wish=payload.is_wish,
+        created_at=created_at,
+        updated_at=int(time()),
+    )
+    db.add(deck)
+    _commit_deck(db)
+    db.refresh(deck)
+    return deck
+
+
+@router.patch("/decks/{deck_id}", response_model=WorkspaceDeckRead)
+def update_deck(
+    deck_id: int,
+    payload: WorkspaceDeckUpdate,
+    db: Session = Depends(get_user_data_db),
+) -> Deck:
+    deck = db.get(Deck, deck_id)
+    if deck is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deck not found")
+    update_data = payload.model_dump(exclude_unset=True)
+    if "name" in update_data:
+        update_data["name"] = update_data["name"].strip()
+        if not update_data["name"]:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Name is required",
+            )
+    if (
+        "player_id" in update_data
+        and update_data["player_id"] is not None
+        and db.get(Player, update_data["player_id"]) is None
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
+    for field, value in update_data.items():
+        setattr(deck, field, value)
+    deck.updated_at = int(time())
+    _commit_deck(db)
+    db.refresh(deck)
+    return deck
+
+
+@router.delete("/decks/{deck_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_deck(deck_id: int, db: Session = Depends(get_user_data_db)) -> None:
+    deck = db.get(Deck, deck_id)
+    if deck is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deck not found")
+    db.delete(deck)
+    db.commit()
+
+
+@router.get("/decks/{deck_id}/items", response_model=list[WorkspaceDeckItemRead])
+def list_deck_items(
+    deck_id: int,
+    db: Session = Depends(get_user_data_db),
+) -> list[WorkspaceDeckItemRead]:
+    deck = db.get(Deck, deck_id)
+    if deck is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deck not found")
+    if deck.is_wish:
+        items = list(
+            db.scalars(
+                select(WishDeckItem)
+                .where(WishDeckItem.deck_id == deck.id)
+                .order_by(WishDeckItem.section, WishDeckItem.id)
+            )
+        )
+        return [
+            WorkspaceDeckItemRead(
+                id=item.id,
+                section=item.section,
+                quantity=item.quantity,
+                name="Card",
+                oracle_id=str(UUID(bytes=item.oracle_id)),
+            )
+            for item in items
+        ]
+    items = list(
+        db.scalars(
+            select(DeckItem)
+            .where(DeckItem.deck_id == deck.id)
+            .order_by(DeckItem.section, DeckItem.id)
+        )
+    )
+    return [
+        WorkspaceDeckItemRead(
+            id=item.id,
+            section=item.section,
+            quantity=item.quantity,
+            name="Card",
+            oracle_id="",
+        )
+        for item in items
+    ]
 
 
 @router.post(
@@ -520,11 +649,6 @@ def delete_collection(
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete the only collection",
-        )
-    if db.scalar(select(Deck.id).where(Deck.wishlist_collection_id == collection.id)) is not None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Collection is linked to a wish deck",
         )
     if (
         db.scalar(

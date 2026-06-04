@@ -45,7 +45,17 @@ def ensure_user_data_schema_compatibility() -> None:
         collection_indexes = {
             row[1] for row in connection.execute("pragma index_list(collections)").fetchall()
         }
+        deck_columns = {
+            row[1]: row for row in connection.execute("pragma table_info(decks)").fetchall()
+        }
         needs_nullable_player_migration = player_id_column is not None and player_id_column[3] != 0
+        needs_deck_schema_rebuild = bool(deck_columns) and (
+            "is_wish" not in deck_columns
+            or "updated_at" not in deck_columns
+            or "is_default" in deck_columns
+            or "is_wishlist" in deck_columns
+            or "wishlist_collection_id" in deck_columns
+        )
 
         if needs_nullable_player_migration:
             connection.execute("pragma foreign_keys = off")
@@ -119,6 +129,19 @@ def ensure_user_data_schema_compatibility() -> None:
             """
         )
 
+        if needs_deck_schema_rebuild:
+            connection.execute("pragma foreign_keys = off")
+            connection.executescript(
+                """
+                drop table if exists wish_deck_items;
+                drop table if exists deck_items;
+                drop table if exists decks;
+                """
+            )
+            connection.execute("pragma foreign_keys = on")
+
+    UserDataBase.metadata.create_all(bind=user_data_engine)
+
 
 def _seed_user_data(db: Session) -> None:
     created_at = int(time())
@@ -141,13 +164,18 @@ def _seed_user_data(db: Session) -> None:
             player,
             collection,
             wishlist,
-            Deck(player=player, name="Default deck", is_default=True, created_at=created_at),
+            Deck(
+                player=player,
+                name="Default deck",
+                created_at=created_at,
+                updated_at=created_at,
+            ),
             Deck(
                 player=player,
                 name="Wish deck",
-                is_wishlist=True,
-                wishlist_collection=wishlist,
+                is_wish=True,
                 created_at=created_at,
+                updated_at=created_at,
             ),
         ]
     )

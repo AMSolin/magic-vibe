@@ -56,13 +56,35 @@ class WorkspaceDeckRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
-    player_id: int
+    player_id: int | None
     name: str
-    is_default: bool
-    is_wishlist: bool
-    wishlist_collection_id: int | None
+    is_wish: bool
     note: str | None
     created_at: int
+    updated_at: int
+
+
+class WorkspaceDeckCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    player_id: int | None = None
+    note: str | None = None
+    is_wish: bool = False
+    created_at: int | None = Field(default=None, ge=0)
+
+
+class WorkspaceDeckUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    player_id: int | None = None
+    note: str | None = None
+    created_at: int | None = Field(default=None, ge=0)
+
+
+class WorkspaceDeckItemRead(BaseModel):
+    id: int
+    section: str
+    quantity: int
+    name: str
+    oracle_id: str
 
 
 class CardSuggestionRead(BaseModel):

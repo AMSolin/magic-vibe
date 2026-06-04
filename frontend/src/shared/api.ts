@@ -184,13 +184,28 @@ export type WorkspacePlayer = {
 
 export type WorkspaceDeck = {
   id: number;
-  player_id: number;
+  player_id: number | null;
   name: string;
-  is_default: boolean;
-  is_wishlist: boolean;
-  wishlist_collection_id: number | null;
+  is_wish: boolean;
   note: string | null;
   created_at: number;
+  updated_at: number;
+};
+
+export type WorkspaceDeckWrite = {
+  name: string;
+  player_id: number | null;
+  note: string | null;
+  is_wish?: boolean;
+  created_at?: number;
+};
+
+export type WorkspaceDeckItem = {
+  id: number;
+  section: string;
+  quantity: number;
+  name: string;
+  oracle_id: string;
 };
 
 export type WorkspacePlayerWrite = {
@@ -569,6 +584,33 @@ export function listWorkspacePlayers(): Promise<WorkspacePlayer[]> {
 
 export function listWorkspaceDecks(): Promise<WorkspaceDeck[]> {
   return request<WorkspaceDeck[]>('/api/workspace/decks');
+}
+
+export function createWorkspaceDeck(payload: WorkspaceDeckWrite): Promise<WorkspaceDeck> {
+  return request<WorkspaceDeck>('/api/workspace/decks', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateWorkspaceDeck(
+  deckId: number,
+  payload: Omit<WorkspaceDeckWrite, 'is_wish'>,
+): Promise<WorkspaceDeck> {
+  return request<WorkspaceDeck>(`/api/workspace/decks/${deckId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteWorkspaceDeck(deckId: number): Promise<void> {
+  return request<void>(`/api/workspace/decks/${deckId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function listWorkspaceDeckItems(deckId: number): Promise<WorkspaceDeckItem[]> {
+  return request<WorkspaceDeckItem[]>(`/api/workspace/decks/${deckId}/items`);
 }
 
 export function createWorkspacePlayer(payload: WorkspacePlayerWrite): Promise<WorkspacePlayer> {

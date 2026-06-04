@@ -1,491 +1,442 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { storeToRefs } from 'pinia';
 import Button from 'primevue/button';
-import Checkbox from 'primevue/checkbox';
-import Column from 'primevue/column';
-import DataTable from 'primevue/datatable';
+import DatePicker from 'primevue/datepicker';
 import Dialog from 'primevue/dialog';
-import InputNumber from 'primevue/inputnumber';
 import InputText from 'primevue/inputtext';
 import Select from 'primevue/select';
 import Textarea from 'primevue/textarea';
 import ToggleSwitch from 'primevue/toggleswitch';
 
-import type { Deck, DeckItem } from '@/shared/api';
-import { useCollectionStore } from '@/stores/collection';
-import { useDecksStore } from '@/stores/decks';
+import {
+  createWorkspaceDeck,
+  deleteWorkspaceDeck,
+  getApiErrorMessage,
+  listWorkspaceDeckItems,
+  listWorkspaceDecks,
+  listWorkspacePlayers,
+  updateWorkspaceDeck,
+} from '@/shared/api';
+import type { WorkspaceDeck, WorkspaceDeckItem, WorkspacePlayer } from '@/shared/api';
 
-const SECTIONS = ['main', 'side', 'maybe', 'commander'];
+const SECTIONS = ['main', 'side', 'maybe', 'commander'] as const;
 
-const collectionStore = useCollectionStore();
-const decksStore = useDecksStore();
-const {
-  collections,
-  selectedCollectionId,
-  items: collectionItems,
-  collectionsLoading,
-  loading: collectionLoading,
-} = storeToRefs(collectionStore);
-const {
-  decks,
-  selectedDeckId,
-  selectedDeck,
-  items: deckItems,
-  decksLoading,
-  itemsLoading,
-  savingCollectionItemId,
-  savingDeck,
-  error,
-  totalCards,
-} = storeToRefs(decksStore);
+const sidebarCollapsed = ref(false);
+const decks = ref<WorkspaceDeck[]>([]);
+const players = ref<WorkspacePlayer[]>([]);
+const deckItems = ref<WorkspaceDeckItem[]>([]);
+const selectedDeckId = ref<number | null>(null);
+const searchQuery = ref('');
 const addSection = ref('main');
-const moveTargets = ref<Record<number, string>>({});
 const createDialogVisible = ref(false);
+const editDialogVisible = ref(false);
 const deleteDialogVisible = ref(false);
-const newDeckName = ref('');
-const newDeckIsDefault = ref(false);
-const newDeckIsWishlist = ref(false);
-const newDeckWishlistCollectionId = ref<number | null>(null);
-const editName = ref('');
-const editOwnerId = ref(1);
-const editNote = ref('');
-const editCreatedAt = ref('');
-const editIsDefault = ref(false);
-const editIsWishlist = ref(false);
-const editWishlistCollectionId = ref<number | null>(null);
+const saving = ref(false);
+const loading = ref(false);
+const message = ref('');
+const error = ref('');
+const createError = ref('');
+const editError = ref('');
 
-const wishlistCollections = computed(() =>
-  collections.value.filter((collection) => collection.is_wishlist),
+const draftName = ref('');
+const draftPlayerId = ref<number | null>(null);
+const draftCreatedAt = ref<Date | null>(null);
+const draftNote = ref('');
+const draftIsWish = ref(false);
+
+const selectedDeck = computed(
+  () => decks.value.find((deck) => deck.id === selectedDeckId.value) ?? null,
 );
-const compatibleCollections = computed(() => {
-  if (selectedDeck.value?.is_wishlist) {
-    return collections.value.filter(
-      (collection) => collection.id === selectedDeck.value?.wishlist_collection_id,
-    );
-  }
-
-  return collections.value.filter((collection) => !collection.is_wishlist);
-});
-const availableCollectionItems = computed(() =>
-  collectionItems.value.filter((item) => item.available_quantity > 0),
+const preferredPlayer = computed(() => players.value.find((player) => player.is_default) ?? null);
+const ownerOptions = computed(() => [
+  { id: null, name: 'No owner' },
+  ...players.value.map((player) => ({ id: player.id, name: player.name })),
+]);
+const totalCards = computed(() =>
+  deckItems.value.reduce((sum, item) => sum + item.quantity, 0),
+);
+const visibleSections = computed(() =>
+  SECTIONS.filter((section) => section === 'main' || itemsForSection(section).length > 0),
 );
 
-function itemsForSection(section: string): DeckItem[] {
+function itemsForSection(section: string): WorkspaceDeckItem[] {
   return deckItems.value.filter((item) => item.section === section);
 }
 
-function quantityForSection(section: string): number {
-  return itemsForSection(section).reduce((sum, item) => sum + item.quantity, 0);
+function timestampToDate(timestamp: number | null | undefined): Date | null {
+  return typeof timestamp === 'number' ? new Date(timestamp * 1000) : null;
 }
 
-function distinctForSection(section: string): number {
-  return new Set(itemsForSection(section).map((item) => item.collection_item.card_uuid)).size;
+function dateToTimestamp(date: Date | null): number | null {
+  return date ? Math.floor(date.getTime() / 1000) : null;
 }
 
-function destinationOptions(section: string): string[] {
-  return SECTIONS.filter((candidate) => candidate !== section);
-}
-
-function resetMetadata(deck: Deck | null): void {
-  editName.value = deck?.name ?? '';
-  editOwnerId.value = deck?.owner_id ?? 1;
-  editNote.value = deck?.note ?? '';
-  editCreatedAt.value = deck?.created_at.slice(0, 10) ?? '';
-  editIsDefault.value = deck?.is_default ?? false;
-  editIsWishlist.value = deck?.is_wishlist ?? false;
-  editWishlistCollectionId.value = deck?.wishlist_collection_id ?? null;
-}
-
-async function syncCollectionForDeck(): Promise<void> {
-  if (compatibleCollections.value.length === 0) {
-    collectionStore.setSelectedCollection(null);
-    return;
+function formatDeckDate(timestamp: number | null | undefined): string {
+  if (typeof timestamp !== 'number') {
+    return '';
   }
-
-  const selectedIsCompatible = compatibleCollections.value.some(
-    (collection) => collection.id === selectedCollectionId.value,
+  return new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(
+    new Date(timestamp * 1000),
   );
-  if (!selectedIsCompatible) {
-    collectionStore.setSelectedCollection(compatibleCollections.value[0]?.id ?? null);
+}
+
+function ownerName(playerId: number | null): string {
+  if (playerId === null) {
+    return 'No owner';
   }
-
-  await collectionStore.fetchCollectionItems();
+  return players.value.find((player) => player.id === playerId)?.name ?? 'Unknown owner';
 }
 
-async function refreshInventory(): Promise<void> {
-  await collectionStore.fetchCollectionItems();
+function resetDraft(deck: WorkspaceDeck | null = null): void {
+  draftName.value = deck?.name ?? '';
+  draftPlayerId.value = deck?.player_id ?? preferredPlayer.value?.id ?? null;
+  draftCreatedAt.value = timestampToDate(deck?.created_at ?? Math.floor(Date.now() / 1000));
+  draftNote.value = deck?.note ?? '';
+  draftIsWish.value = deck?.is_wish ?? false;
 }
 
-async function addToDeck(collectionItemId: number): Promise<void> {
-  const added = await decksStore.addItem({
-    collection_item_id: collectionItemId,
-    section: addSection.value,
-    is_commander: addSection.value === 'commander',
-  });
-  if (added) {
-    await refreshInventory();
-  }
+function openCreateDeckDialog(): void {
+  resetDraft();
+  draftIsWish.value = false;
+  createError.value = '';
+  createDialogVisible.value = true;
 }
 
-async function updateDeckItem(itemId: number, quantity: number | null): Promise<void> {
-  const updated = await decksStore.updateItem(itemId, { quantity: quantity ?? 1 });
-  if (updated) {
-    await refreshInventory();
-  }
-}
-
-async function toggleCommander(item: DeckItem, value: boolean): Promise<void> {
-  await decksStore.updateItem(item.id, { is_commander: value });
-}
-
-async function moveDeckItem(item: DeckItem, moveAll: boolean): Promise<void> {
-  const section = moveTargets.value[item.id];
-  if (!section) {
+function openEditDeckDialog(): void {
+  if (!selectedDeck.value) {
     return;
   }
+  resetDraft(selectedDeck.value);
+  editError.value = '';
+  editDialogVisible.value = true;
+}
 
-  const moved = await decksStore.moveItem(item.id, {
-    section,
-    quantity: moveAll ? undefined : 1,
-  });
-  if (moved) {
-    delete moveTargets.value[item.id];
-    await refreshInventory();
+function selectDeck(deckId: number): void {
+  selectedDeckId.value = deckId;
+  message.value = '';
+  error.value = '';
+}
+
+async function refreshDecks(preferredDeckId?: number): Promise<void> {
+  decks.value = await listWorkspaceDecks();
+  selectedDeckId.value =
+    preferredDeckId ??
+    (selectedDeckId.value && decks.value.some((deck) => deck.id === selectedDeckId.value)
+      ? selectedDeckId.value
+      : decks.value[0]?.id ?? null);
+}
+
+async function refreshDeckItems(): Promise<void> {
+  if (selectedDeckId.value === null) {
+    deckItems.value = [];
+    return;
+  }
+  deckItems.value = await listWorkspaceDeckItems(selectedDeckId.value);
+}
+
+async function refreshAll(preferredDeckId?: number): Promise<void> {
+  loading.value = true;
+  error.value = '';
+  try {
+    players.value = await listWorkspacePlayers();
+    await refreshDecks(preferredDeckId);
+    await refreshDeckItems();
+  } catch (requestError) {
+    error.value = getApiErrorMessage(requestError, 'Decks are unavailable');
+  } finally {
+    loading.value = false;
   }
 }
 
-async function removeDeckItem(itemId: number): Promise<void> {
-  const removed = await decksStore.removeItem(itemId);
-  if (removed) {
-    await refreshInventory();
+async function createDeck(): Promise<void> {
+  const createdAt = dateToTimestamp(draftCreatedAt.value);
+  if (!draftName.value.trim() || createdAt === null) {
+    return;
   }
-}
-
-async function createNewDeck(): Promise<void> {
-  const created = await decksStore.createNewDeck({
-    name: newDeckName.value,
-    is_default: newDeckIsDefault.value,
-    is_wishlist: newDeckIsWishlist.value,
-    wishlist_collection_id: newDeckIsWishlist.value
-      ? newDeckWishlistCollectionId.value
-      : null,
-  });
-  if (created) {
+  saving.value = true;
+  createError.value = '';
+  error.value = '';
+  message.value = '';
+  try {
+    const created = await createWorkspaceDeck({
+      name: draftName.value.trim(),
+      player_id: draftPlayerId.value,
+      note: draftNote.value || null,
+      is_wish: draftIsWish.value,
+      created_at: createdAt,
+    });
     createDialogVisible.value = false;
-    newDeckName.value = '';
-    newDeckIsDefault.value = false;
-    newDeckIsWishlist.value = false;
-    newDeckWishlistCollectionId.value = null;
+    await refreshAll(created.id);
+    message.value = 'Deck created';
+  } catch (requestError) {
+    createError.value = getApiErrorMessage(requestError, 'Deck could not be created');
+  } finally {
+    saving.value = false;
   }
 }
 
-async function saveMetadata(): Promise<void> {
-  await decksStore.updateSelectedDeck({
-    name: editName.value,
-    owner_id: editOwnerId.value,
-    note: editNote.value || null,
-    created_at: `${editCreatedAt.value}T00:00:00`,
-    is_default: editIsDefault.value,
-    is_wishlist: editIsWishlist.value,
-    wishlist_collection_id: editIsWishlist.value ? editWishlistCollectionId.value : null,
-  });
-  await syncCollectionForDeck();
+async function saveDeckMetadata(): Promise<void> {
+  const deck = selectedDeck.value;
+  const createdAt = dateToTimestamp(draftCreatedAt.value);
+  if (!deck || !draftName.value.trim() || createdAt === null) {
+    return;
+  }
+  saving.value = true;
+  editError.value = '';
+  error.value = '';
+  message.value = '';
+  try {
+    const updated = await updateWorkspaceDeck(deck.id, {
+      name: draftName.value.trim(),
+      player_id: draftPlayerId.value,
+      note: draftNote.value || null,
+      created_at: createdAt,
+    });
+    editDialogVisible.value = false;
+    await refreshAll(updated.id);
+    message.value = 'Deck changes saved';
+  } catch (requestError) {
+    editError.value = getApiErrorMessage(requestError, 'Deck changes could not be saved');
+  } finally {
+    saving.value = false;
+  }
 }
 
-async function deleteSelectedDeck(): Promise<void> {
-  const removed = await decksStore.removeSelectedDeck();
-  if (removed) {
+async function confirmDeleteDeck(): Promise<void> {
+  const deck = selectedDeck.value;
+  if (!deck) {
+    return;
+  }
+  saving.value = true;
+  error.value = '';
+  message.value = '';
+  try {
+    await deleteWorkspaceDeck(deck.id);
     deleteDialogVisible.value = false;
+    await refreshAll();
+    message.value = 'Deck deleted';
+  } catch (requestError) {
+    error.value = getApiErrorMessage(requestError, 'Deck could not be deleted');
+  } finally {
+    saving.value = false;
   }
 }
-
-onMounted(async () => {
-  await Promise.all([collectionStore.fetchCollections(), decksStore.fetchDecks()]);
-  await decksStore.fetchDeckItems();
-  await syncCollectionForDeck();
-});
-
-watch(selectedDeck, (deck) => resetMetadata(deck), { immediate: true });
 
 watch(selectedDeckId, async () => {
-  await decksStore.fetchDeckItems();
-  await syncCollectionForDeck();
-});
-
-watch(selectedCollectionId, async () => {
-  await collectionStore.fetchCollectionItems();
-});
-
-watch(newDeckIsWishlist, (isWishlist) => {
-  if (isWishlist && newDeckWishlistCollectionId.value === null) {
-    newDeckWishlistCollectionId.value = wishlistCollections.value[0]?.id ?? null;
+  try {
+    await refreshDeckItems();
+  } catch (requestError) {
+    error.value = getApiErrorMessage(requestError, 'Deck contents are unavailable');
   }
 });
 
-watch(editIsWishlist, (isWishlist) => {
-  if (isWishlist && editWishlistCollectionId.value === null) {
-    editWishlistCollectionId.value = wishlistCollections.value[0]?.id ?? null;
-  }
+onMounted(() => {
+  void refreshAll();
 });
 </script>
 
 <template>
-  <section class="page">
-    <div class="page-header">
-      <div>
-        <h1>Decks</h1>
-        <span class="summary">{{ selectedDeck?.name ?? 'No deck' }} · {{ totalCards }} cards</span>
-      </div>
-      <div class="header-actions">
-        <Select
-          v-model="selectedDeckId"
-          class="collection-select"
-          :options="decks"
-          option-label="name"
-          option-value="id"
-          :loading="decksLoading"
-          aria-label="Deck"
-        />
-        <Button icon="pi pi-plus" aria-label="Create deck" @click="createDialogVisible = true" />
-        <Button
-          icon="pi pi-trash"
-          severity="secondary"
-          aria-label="Delete deck"
-          :disabled="decks.length <= 1"
-          @click="deleteDialogVisible = true"
-        />
-      </div>
-    </div>
-
-    <p v-if="error" class="empty-state">{{ error }}</p>
-
-    <section v-if="selectedDeck" class="tool-panel">
-      <div class="section-header">
-        <h2>Deck info</h2>
-        <Button
-          icon="pi pi-save"
-          label="Save"
-          size="small"
-          :loading="savingDeck"
-          @click="saveMetadata"
-        />
-      </div>
-      <div class="metadata-grid">
-        <label class="field">
-          <span>Name</span>
-          <InputText v-model="editName" />
-        </label>
-        <label class="field">
-          <span>Owner ID</span>
-          <InputNumber v-model="editOwnerId" :min="1" />
-        </label>
-        <label class="field">
-          <span>Creation date</span>
-          <InputText v-model="editCreatedAt" type="date" />
-        </label>
-        <label class="toggle-field">
-          <Checkbox v-model="editIsDefault" binary />
-          <span>Primary deck</span>
-        </label>
-        <label class="toggle-field">
-          <ToggleSwitch v-model="editIsWishlist" />
-          <span>Wish deck</span>
-        </label>
-        <label v-if="editIsWishlist" class="field">
-          <span>Wishlist collection</span>
-          <Select
-            v-model="editWishlistCollectionId"
-            :options="wishlistCollections"
-            option-label="name"
-            option-value="id"
-            aria-label="Wishlist collection"
+  <section class="collection-workspace decks-workspace" :class="{ 'sidebar-is-collapsed': sidebarCollapsed }">
+    <aside class="collection-sidebar" :class="{ collapsed: sidebarCollapsed }">
+      <Button
+        icon="pi pi-bars"
+        severity="secondary"
+        text
+        :aria-label="sidebarCollapsed ? 'Expand decks' : 'Collapse decks'"
+        @click="sidebarCollapsed = !sidebarCollapsed"
+      />
+      <template v-if="!sidebarCollapsed">
+        <h2>Decks</h2>
+        <div class="sidebar-list">
+          <button
+            v-for="deck in decks"
+            :key="deck.id"
+            type="button"
+            :class="{ selected: selectedDeckId === deck.id }"
+            @click="selectDeck(deck.id)"
+          >
+            <span>{{ deck.name }}</span>
+            <i v-if="deck.is_wish" class="pi pi-heart-fill" title="Wish deck" />
+          </button>
+        </div>
+        <div class="sidebar-actions">
+          <Button icon="pi pi-plus" label="Add" size="small" @click="openCreateDeckDialog" />
+          <Button
+            icon="pi pi-pencil"
+            label="Edit"
+            size="small"
+            severity="secondary"
+            :disabled="!selectedDeck"
+            @click="openEditDeckDialog"
           />
-        </label>
-        <label class="field note-field">
-          <span>Note</span>
-          <Textarea v-model="editNote" rows="2" auto-resize />
-        </label>
-      </div>
-    </section>
-
-    <section v-for="section in SECTIONS" :key="section" class="deck-section">
-      <div class="section-title">
-        <h2>{{ section }}</h2>
-        <span>{{ quantityForSection(section) }} cards · {{ distinctForSection(section) }} distinct</span>
-      </div>
-      <DataTable
-        v-if="itemsForSection(section).length > 0"
-        :value="itemsForSection(section)"
-        :loading="itemsLoading"
-        data-key="id"
-        striped-rows
-      >
-        <Column field="collection_item.card.name" header="Card" />
-        <Column field="quantity" header="Qty">
-          <template #body="{ data }">
-            <InputNumber
-              :model-value="data.quantity"
-              input-class="quantity-input"
-              :min="1"
-              show-buttons
-              @update:model-value="(value) => updateDeckItem(data.id, value)"
-            />
-          </template>
-        </Column>
-        <Column header="Cmdr">
-          <template #body="{ data }">
-            <Checkbox
-              :model-value="data.is_commander"
-              binary
-              :aria-label="`Commander ${data.collection_item.card.name}`"
-              @update:model-value="(value) => toggleCommander(data, value)"
-            />
-          </template>
-        </Column>
-        <Column field="collection_item.condition_code" header="Condition" />
-        <Column header="Foil">
-          <template #body="{ data }">
-            {{ data.collection_item.foil ? 'Foil' : 'Nonfoil' }}
-          </template>
-        </Column>
-        <Column header="Move">
-          <template #body="{ data }">
-            <div class="move-controls">
-              <Select
-                v-model="moveTargets[data.id]"
-                class="move-select"
-                :options="destinationOptions(data.section)"
-                :aria-label="`Move ${data.collection_item.card.name}`"
-                placeholder="Section"
-              />
-              <Button
-                label="One"
-                size="small"
-                severity="secondary"
-                :disabled="!moveTargets[data.id]"
-                @click="moveDeckItem(data, false)"
-              />
-              <Button
-                label="All"
-                size="small"
-                severity="secondary"
-                :disabled="!moveTargets[data.id]"
-                @click="moveDeckItem(data, true)"
-              />
-            </div>
-          </template>
-        </Column>
-        <Column header="">
-          <template #body="{ data }">
-            <Button
-              icon="pi pi-trash"
-              severity="secondary"
-              text
-              rounded
-              aria-label="Remove from deck"
-              @click="removeDeckItem(data.id)"
-            />
-          </template>
-        </Column>
-      </DataTable>
-      <p v-else class="empty-section">Empty</p>
-    </section>
-
-    <section class="deck-section">
-      <div class="section-header">
-        <h2>Add from collection</h2>
-        <div class="add-defaults">
-          <Select
-            v-model="selectedCollectionId"
-            class="collection-select"
-            :options="compatibleCollections"
-            option-label="name"
-            option-value="id"
-            :loading="collectionsLoading"
-            aria-label="Source collection"
+          <Button
+            icon="pi pi-trash"
+            label="Delete"
+            size="small"
+            severity="danger"
+            :disabled="!selectedDeck"
+            @click="deleteDialogVisible = true"
           />
-          <Select v-model="addSection" :options="SECTIONS" aria-label="Deck section" />
+        </div>
+      </template>
+    </aside>
+
+    <main class="inventory-pane deck-search-pane">
+      <div class="workspace-heading">
+        <div>
+          <h1>{{ selectedDeck?.name ?? 'Decks' }}</h1>
+          <p v-if="selectedDeck" class="deck-heading-meta">
+            {{ selectedDeck.is_wish ? 'Wish deck' : 'Physical deck' }} /
+            {{ ownerName(selectedDeck.player_id) }} /
+            {{ totalCards }} cards /
+            {{ formatDeckDate(selectedDeck.created_at) }}
+          </p>
         </div>
       </div>
 
-      <DataTable
-        :value="availableCollectionItems"
-        :loading="collectionLoading"
-        data-key="id"
-        striped-rows
-      >
-        <Column field="card.name" header="Card" />
-        <Column field="available_quantity" header="Available" />
-        <Column field="quantity" header="Owned" />
-        <Column field="condition_code" header="Condition" />
-        <Column header="Foil">
-          <template #body="{ data }">
-            {{ data.foil ? 'Foil' : 'Nonfoil' }}
-          </template>
-        </Column>
-        <Column header="">
-          <template #body="{ data }">
-            <Button
-              icon="pi pi-plus"
-              label="Add"
-              size="small"
-              :loading="savingCollectionItemId === data.id"
-              @click="addToDeck(data.id)"
-            />
-          </template>
-        </Column>
-      </DataTable>
-    </section>
+      <p v-if="message" class="success-text">{{ message }}</p>
+      <p v-if="error" class="panel-error" role="alert">
+        <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+        <span>{{ error }}</span>
+      </p>
 
-    <Dialog v-model:visible="createDialogVisible" modal header="Create deck" class="deck-dialog">
-      <div class="dialog-fields">
+      <section class="deck-search-filters">
         <label class="field">
-          <span>Name</span>
-          <InputText v-model="newDeckName" autofocus />
+          <span>Card name</span>
+          <InputText v-model="searchQuery" placeholder="Search by name" />
+        </label>
+        <label class="field">
+          <span>Section</span>
+          <Select v-model="addSection" :options="[...SECTIONS]" aria-label="Add section" />
+        </label>
+      </section>
+
+      <section class="deck-search-results">
+        <div class="section-header">
+          <h2>Search results</h2>
+          <span>{{ loading ? 'Loading' : '0' }}</span>
+        </div>
+        <p class="empty-state">
+          Card search and allocation controls are the next deck workflow slice.
+        </p>
+      </section>
+    </main>
+
+    <aside class="inspector-pane deck-contents-pane">
+      <div class="workspace-heading">
+        <h1>Deck contents</h1>
+      </div>
+      <section v-if="selectedDeck" class="inspector-content deck-list-content">
+        <section v-for="section in visibleSections" :key="section" class="decklist-section">
+          <div class="section-header">
+            <h2>{{ section }}</h2>
+            <span>{{ itemsForSection(section).reduce((sum, item) => sum + item.quantity, 0) }}</span>
+          </div>
+          <div v-if="itemsForSection(section).length" class="decklist">
+            <div v-for="item in itemsForSection(section)" :key="item.id" class="decklist-row">
+              <span>{{ item.name }}</span>
+              <strong>{{ item.quantity }}</strong>
+            </div>
+          </div>
+          <p v-else class="empty-state">No cards yet.</p>
+        </section>
+      </section>
+      <p v-else class="empty-state">Create a deck to start building.</p>
+    </aside>
+
+    <Dialog v-model:visible="createDialogVisible" modal header="Create deck">
+      <div class="dialog-fields deck-dialog-fields">
+        <label class="field"><span>Name</span><InputText v-model="draftName" autofocus /></label>
+        <label class="field">
+          <span>Owner</span>
+          <Select v-model="draftPlayerId" :options="ownerOptions" option-label="name" option-value="id" />
+        </label>
+        <label class="field">
+          <span>Created at</span>
+          <DatePicker v-model="draftCreatedAt" date-format="yy-mm-dd" show-icon />
         </label>
         <label class="toggle-field">
-          <Checkbox v-model="newDeckIsDefault" binary />
-          <span>Primary deck</span>
-        </label>
-        <label class="toggle-field">
-          <ToggleSwitch v-model="newDeckIsWishlist" />
+          <ToggleSwitch v-model="draftIsWish" />
           <span>Wish deck</span>
         </label>
-        <label v-if="newDeckIsWishlist" class="field">
-          <span>Wishlist collection</span>
-          <Select
-            v-model="newDeckWishlistCollectionId"
-            :options="wishlistCollections"
-            option-label="name"
-            option-value="id"
-            aria-label="New deck wishlist collection"
-          />
+        <label class="field">
+          <span>Note</span>
+          <Textarea v-model="draftNote" rows="3" auto-resize />
         </label>
+        <p v-if="createError" class="panel-error" role="alert">
+          <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+          <span>{{ createError }}</span>
+        </p>
       </div>
       <template #footer>
-        <Button label="Cancel" severity="secondary" text @click="createDialogVisible = false" />
-        <Button
-          label="Create"
-          icon="pi pi-plus"
-          :loading="savingDeck"
-          :disabled="!newDeckName.trim()"
-          @click="createNewDeck"
-        />
+        <div class="dialog-actions">
+          <Button label="Cancel" severity="secondary" @click="createDialogVisible = false" />
+          <Button
+            icon="pi pi-plus"
+            label="Create deck"
+            :disabled="!draftName.trim() || !draftCreatedAt"
+            :loading="saving"
+            @click="createDeck"
+          />
+        </div>
       </template>
     </Dialog>
 
-    <Dialog v-model:visible="deleteDialogVisible" modal header="Delete deck" class="deck-dialog">
-      <p>Delete {{ selectedDeck?.name }} and all cards assigned to it?</p>
+    <Dialog v-model:visible="editDialogVisible" modal header="Edit deck">
+      <div class="dialog-fields deck-dialog-fields">
+        <label class="field"><span>Name</span><InputText v-model="draftName" autofocus /></label>
+        <label class="field">
+          <span>Owner</span>
+          <Select v-model="draftPlayerId" :options="ownerOptions" option-label="name" option-value="id" />
+        </label>
+        <label class="field">
+          <span>Created at</span>
+          <DatePicker v-model="draftCreatedAt" date-format="yy-mm-dd" show-icon />
+        </label>
+        <label class="toggle-field">
+          <ToggleSwitch :model-value="draftIsWish" disabled />
+          <span>Wish deck</span>
+        </label>
+        <label class="field">
+          <span>Note</span>
+          <Textarea v-model="draftNote" rows="3" auto-resize />
+        </label>
+        <p v-if="editError" class="panel-error" role="alert">
+          <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+          <span>{{ editError }}</span>
+        </p>
+      </div>
       <template #footer>
-        <Button label="Cancel" severity="secondary" text @click="deleteDialogVisible = false" />
-        <Button
-          label="Delete"
-          icon="pi pi-trash"
-          severity="danger"
-          :loading="savingDeck"
-          @click="deleteSelectedDeck"
-        />
+        <div class="dialog-actions">
+          <Button label="Cancel" severity="secondary" @click="editDialogVisible = false" />
+          <Button
+            icon="pi pi-save"
+            label="Save changes"
+            :disabled="!draftName.trim() || !draftCreatedAt"
+            :loading="saving"
+            @click="saveDeckMetadata"
+          />
+        </div>
+      </template>
+    </Dialog>
+
+    <Dialog v-model:visible="deleteDialogVisible" modal header="Delete deck">
+      <div class="dialog-fields">
+        <p class="warning-text">
+          Delete {{ selectedDeck?.name }}? Its deck contents will be removed.
+        </p>
+      </div>
+      <template #footer>
+        <div class="dialog-actions">
+          <Button label="Cancel" severity="secondary" @click="deleteDialogVisible = false" />
+          <Button
+            icon="pi pi-trash"
+            label="Delete deck"
+            severity="danger"
+            :loading="saving"
+            @click="confirmDeleteDeck"
+          />
+        </div>
       </template>
     </Dialog>
   </section>

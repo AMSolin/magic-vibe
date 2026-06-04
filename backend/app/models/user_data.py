@@ -113,35 +113,23 @@ class CollectionItem(UserDataBase):
 class Deck(UserDataBase):
     __tablename__ = "decks"
     __table_args__ = (
-        UniqueConstraint("player_id", "name", name="uq_decks_player_name"),
-        CheckConstraint(
-            """
-            (is_wishlist = 0 and wishlist_collection_id is null)
-            or
-            (is_wishlist = 1 and wishlist_collection_id is not null)
-            """,
-            name="ck_decks_wishlist_collection",
-        ),
-        Index(
-            "uq_decks_player_default",
-            "player_id",
-            unique=True,
-            sqlite_where=text("is_default = 1"),
-        ),
+        UniqueConstraint("player_id", "is_wish", "name", name="uq_decks_player_type_name"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), index=True)
+    player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), index=True)
     name: Mapped[str] = mapped_column(String(255))
     note: Mapped[str | None] = mapped_column(Text)
-    is_default: Mapped[bool] = mapped_column(Boolean(create_constraint=True), default=False)
-    is_wishlist: Mapped[bool] = mapped_column(Boolean(create_constraint=True), default=False)
-    wishlist_collection_id: Mapped[int | None] = mapped_column(ForeignKey("collections.id"))
+    is_wish: Mapped[bool] = mapped_column(Boolean(create_constraint=True), default=False)
     created_at: Mapped[int] = mapped_column(Integer)
+    updated_at: Mapped[int] = mapped_column(Integer)
 
-    player: Mapped[Player] = relationship(back_populates="decks")
-    wishlist_collection: Mapped[Collection | None] = relationship()
+    player: Mapped[Player | None] = relationship(back_populates="decks")
     items: Mapped[list["DeckItem"]] = relationship(
+        back_populates="deck",
+        cascade="all, delete-orphan",
+    )
+    wish_items: Mapped[list["WishDeckItem"]] = relationship(
         back_populates="deck",
         cascade="all, delete-orphan",
     )
@@ -169,6 +157,40 @@ class DeckItem(UserDataBase):
     collection_item: Mapped[CollectionItem] = relationship(back_populates="deck_items")
 
 
+class WishDeckItem(UserDataBase):
+    __tablename__ = "wish_deck_items"
+    __table_args__ = (
+        UniqueConstraint(
+            "deck_id",
+            "oracle_id",
+            "language_code",
+            "section",
+            name="uq_wish_deck_items_identity",
+        ),
+        CheckConstraint("length(oracle_id) = 16", name="ck_wish_deck_items_oracle_id_length"),
+        CheckConstraint(
+            "section in ('main', 'side', 'maybe', 'commander')",
+            name="ck_wish_deck_items_section",
+        ),
+        CheckConstraint("quantity > 0", name="ck_wish_deck_items_quantity_positive"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    deck_id: Mapped[int] = mapped_column(ForeignKey("decks.id", ondelete="CASCADE"), index=True)
+    oracle_id: Mapped[bytes] = mapped_column(LargeBinary(16), index=True)
+    language_code: Mapped[str] = mapped_column(String(16))
+    section: Mapped[str] = mapped_column(String(32), default="main")
+    quantity: Mapped[int] = mapped_column(Integer)
+    linked_collection_item_id: Mapped[int | None] = mapped_column(
+        ForeignKey("collection_items.id", ondelete="SET NULL"),
+        index=True,
+    )
+    created_at: Mapped[int] = mapped_column(Integer)
+
+    deck: Mapped[Deck] = relationship(back_populates="wish_items")
+    linked_collection_item: Mapped[CollectionItem | None] = relationship()
+
+
 USER_DATA_MODELS: "Sequence[type[UserDataBase]]" = (
     Player,
     CardCondition,
@@ -176,4 +198,5 @@ USER_DATA_MODELS: "Sequence[type[UserDataBase]]" = (
     CollectionItem,
     Deck,
     DeckItem,
+    WishDeckItem,
 )

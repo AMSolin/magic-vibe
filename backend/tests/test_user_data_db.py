@@ -13,6 +13,7 @@ from app.models.user_data import (
     Deck,
     DeckItem,
     Player,
+    WishDeckItem,
 )
 from app.services import user_data
 
@@ -51,6 +52,7 @@ def test_user_data_tables_are_created_with_seed_data(
         "deck_items",
         "decks",
         "players",
+        "wish_deck_items",
     }
 
     with user_data_database() as db:
@@ -67,11 +69,11 @@ def test_user_data_tables_are_created_with_seed_data(
         ("My collection", True, False),
         ("Wishlist", False, True),
     ]
-    assert [(deck.name, deck.is_default, deck.is_wishlist) for deck in decks] == [
-        ("Default deck", True, False),
-        ("Wish deck", False, True),
+    assert [(deck.name, deck.is_wish, deck.player_id is not None) for deck in decks] == [
+        ("Default deck", False, True),
+        ("Wish deck", True, True),
     ]
-    assert decks[1].wishlist_collection_id == collections[1].id
+    assert all(deck.created_at == deck.updated_at for deck in decks)
 
 
 def test_recreate_user_data_db_discards_existing_rows(
@@ -133,6 +135,26 @@ def test_deck_item_rejects_unknown_section(
                 collection_item_id=collection_item.id,
                 section="invalid",
                 quantity=1,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            db.commit()
+
+
+def test_wish_deck_item_rejects_unknown_section(
+    user_data_database: sessionmaker[Session],
+) -> None:
+    with user_data_database() as db:
+        deck_id = db.scalar(select(Deck.id).where(Deck.name == "Wish deck"))
+        assert deck_id is not None
+        db.add(
+            WishDeckItem(
+                deck_id=deck_id,
+                oracle_id=b"a" * 16,
+                language_code="en",
+                section="invalid",
+                quantity=1,
+                created_at=1,
             )
         )
         with pytest.raises(IntegrityError):

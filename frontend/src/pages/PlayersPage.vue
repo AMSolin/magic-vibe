@@ -53,6 +53,7 @@ const selectedPlayerDecks = computed(() => {
   }
   return decks.value.filter((deck) => deck.player_id === player.id);
 });
+const affectedDecks = computed(() => selectedPlayerDecks.value);
 
 const playerCreatedAtTimestamp = computed(() =>
   playerCreatedAt.value ? Math.floor(playerCreatedAt.value.getTime() / 1000) : null,
@@ -206,7 +207,7 @@ async function deletePlayer(): Promise<void> {
     error.value = 'At least one player must remain';
     return;
   }
-  if (affectedCollections.value.length > 0) {
+  if (affectedCollections.value.length > 0 || affectedDecks.value.length > 0) {
     deleteDialogVisible.value = true;
     return;
   }
@@ -313,8 +314,7 @@ onMounted(async () => {
           <div v-for="deck in selectedPlayerDecks" :key="deck.id" class="asset-row">
             <span>{{ deck.name }}</span>
             <span class="asset-badges">
-              <i v-if="deck.is_default" class="pi pi-star-fill" title="Primary deck" />
-              <i v-if="deck.is_wishlist" class="pi pi-heart-fill" title="Wish deck" />
+              <i v-if="deck.is_wish" class="pi pi-heart-fill" title="Wish deck" />
             </span>
           </div>
         </div>
@@ -406,11 +406,16 @@ onMounted(async () => {
       <div class="dialog-fields">
         <p class="warning-text">
           This will delete only the player. The owner field will be cleared in these
-          collections; the collections and their cards will remain.
+          collections and decks; their contents will remain.
         </p>
-        <ul class="affected-list">
+        <ul v-if="affectedCollections.length" class="affected-list">
           <li v-for="collection in affectedCollections" :key="collection.id">
             {{ collection.name }}
+          </li>
+        </ul>
+        <ul v-if="affectedDecks.length" class="affected-list">
+          <li v-for="deck in affectedDecks" :key="deck.id">
+            {{ deck.name }}
           </li>
         </ul>
         <p v-if="error" class="panel-error" role="alert">

@@ -246,6 +246,58 @@ def test_workspace_player_asset_lists_include_decks(workspace_client: TestClient
     assert decks.json() == []
 
 
+def test_workspace_deck_settings_crud(workspace_client: TestClient) -> None:
+    created = workspace_client.post(
+        "/api/workspace/decks",
+        json={
+            "name": "Commander plan",
+            "player_id": 1,
+            "note": "First pass",
+            "is_wish": True,
+            "created_at": 1_800_000_000,
+        },
+    )
+    assert created.status_code == 201
+    assert created.json()["name"] == "Commander plan"
+    assert created.json()["player_id"] == 1
+    assert created.json()["is_wish"] is True
+    assert created.json()["created_at"] == 1_800_000_000
+    assert isinstance(created.json()["updated_at"], int)
+
+    duplicate_same_type = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Commander plan", "player_id": 1, "is_wish": True},
+    )
+    duplicate_other_type = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Commander plan", "player_id": 1, "is_wish": False},
+    )
+    assert duplicate_same_type.status_code == 409
+    assert duplicate_other_type.status_code == 201
+
+    updated = workspace_client.patch(
+        f"/api/workspace/decks/{created.json()['id']}",
+        json={
+            "name": "Renamed plan",
+            "player_id": None,
+            "note": "Updated",
+            "created_at": 1_810_000_000,
+        },
+    )
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "Renamed plan"
+    assert updated.json()["player_id"] is None
+    assert updated.json()["is_wish"] is True
+    assert updated.json()["created_at"] == 1_810_000_000
+
+    items = workspace_client.get(f"/api/workspace/decks/{created.json()['id']}/items")
+    assert items.status_code == 200
+    assert items.json() == []
+
+    deleted = workspace_client.delete(f"/api/workspace/decks/{created.json()['id']}")
+    assert deleted.status_code == 204
+
+
 def test_workspace_player_settings_crud(workspace_client: TestClient) -> None:
     created = workspace_client.post(
         "/api/workspace/players",
@@ -314,14 +366,41 @@ def test_workspace_player_settings_validation(workspace_client: TestClient) -> N
     ] is True
     assert delete_linked_player.status_code == 409
     assert delete_linked_player.json()["detail"] == {
-        "message": "Player owns collections",
+        "message": "Player owns collections or decks",
         "collections": [{"id": 1, "name": "My collection"}],
+        "decks": [],
     }
     assert confirmed_delete.status_code == 204
     collections_after_player_delete = workspace_client.get("/api/workspace/collections").json()
     assert collections_after_player_delete[0]["player_id"] is None
     assert collections_after_player_delete[0]["is_default"] is True
     assert unnamed.status_code == 422
+
+
+def test_workspace_player_delete_clears_deck_owner(workspace_client: TestClient) -> None:
+    created_player = workspace_client.post(
+        "/api/workspace/players",
+        json={"name": "Second player"},
+    ).json()
+    created_deck = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Loose deck", "player_id": created_player["id"]},
+    ).json()
+    unconfirmed = workspace_client.delete(f"/api/workspace/players/{created_player['id']}")
+    confirmed = workspace_client.delete(
+        f"/api/workspace/players/{created_player['id']}",
+        params={"confirm_collection_owner_clear": "true"},
+    )
+
+    assert unconfirmed.status_code == 409
+    assert unconfirmed.json()["detail"] == {
+        "message": "Player owns collections or decks",
+        "collections": [],
+        "decks": [{"id": created_deck["id"], "name": "Loose deck"}],
+    }
+    assert confirmed.status_code == 204
+    decks = workspace_client.get("/api/workspace/decks").json()
+    assert next(deck for deck in decks if deck["id"] == created_deck["id"])["player_id"] is None
 
 
 def test_workspace_collection_settings_validation(workspace_client: TestClient) -> None:
