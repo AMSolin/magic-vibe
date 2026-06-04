@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import Button from 'primevue/button';
 import Checkbox from 'primevue/checkbox';
 import Column from 'primevue/column';
@@ -43,6 +44,8 @@ import type {
   WorkspacePlayer,
 } from '@/shared/api';
 
+const route = useRoute();
+const router = useRouter();
 const conditions = ['NM', 'SP', 'MP', 'HP', 'D'];
 const sidebarCollapsed = ref(false);
 const activeTab = ref<'info' | 'add' | 'card' | 'edit'>('info');
@@ -217,7 +220,6 @@ const collectionChanges = computed(() => {
 const collectionDirty = computed(() => collectionChanges.value.length > 0);
 const collectionCanSave = computed(() =>
   collectionDirty.value &&
-  collectionPlayerId.value !== null &&
   collectionCreatedAtTimestamp.value !== null &&
   Boolean(collectionName.value.trim()),
 );
@@ -232,7 +234,32 @@ function resetCollectionDraft(): void {
   collectionCreatedAt.value = timestampToDate(collection?.created_at);
 }
 
-function selectCollection(collectionId: number): void {
+function collectionIdFromRoute(): number | null {
+  const rawCollectionId = route.query.collection_id;
+  const collectionId = Array.isArray(rawCollectionId) ? rawCollectionId[0] : rawCollectionId;
+  const parsedCollectionId = Number(collectionId);
+  return Number.isInteger(parsedCollectionId) && parsedCollectionId > 0 ? parsedCollectionId : null;
+}
+
+function replaceCollectionRoute(collectionId: number | null): void {
+  const nextQuery = { ...route.query };
+  if (collectionId === null) {
+    delete nextQuery.collection_id;
+  } else {
+    nextQuery.collection_id = String(collectionId);
+  }
+  void router.replace({ path: '/', query: nextQuery });
+}
+
+function getInitialCollectionId(): number | null {
+  const routeCollectionId = collectionIdFromRoute();
+  if (routeCollectionId && collections.value.some((collection) => collection.id === routeCollectionId)) {
+    return routeCollectionId;
+  }
+  return collections.value.find((collection) => collection.is_default)?.id ?? collections.value[0]?.id ?? null;
+}
+
+function selectCollection(collectionId: number, syncRoute = true): void {
   if (
     selectedCollectionId.value !== collectionId &&
     collectionDirty.value &&
@@ -242,6 +269,11 @@ function selectCollection(collectionId: number): void {
   }
   selectedCollectionId.value = collectionId;
   activeTab.value = 'info';
+  error.value = '';
+  message.value = '';
+  if (syncRoute) {
+    replaceCollectionRoute(collectionId);
+  }
 }
 
 function openCreateCollectionDialog(): void {
@@ -273,6 +305,7 @@ async function createCollection(): Promise<void> {
     });
     collections.value = await listWorkspaceCollections();
     selectedCollectionId.value = created.id;
+    replaceCollectionRoute(created.id);
     activeTab.value = 'info';
     createCollectionDialogVisible.value = false;
     createCollectionError.value = '';
@@ -309,6 +342,7 @@ async function saveCollectionChanges(): Promise<void> {
     });
     collections.value = await listWorkspaceCollections();
     selectedCollectionId.value = updated.id;
+    replaceCollectionRoute(updated.id);
     resetCollectionDraft();
     message.value = 'Collection changes saved';
   } catch (requestError) {
@@ -334,6 +368,7 @@ async function deleteCollection(): Promise<void> {
     collections.value = await listWorkspaceCollections();
     selectedCollectionId.value =
       collections.value.find((item) => item.is_default)?.id ?? collections.value[0]?.id ?? null;
+    replaceCollectionRoute(selectedCollectionId.value);
     activeTab.value = 'info';
     message.value = 'Collection deleted';
   } catch (requestError) {
@@ -537,6 +572,8 @@ async function addCard(): Promise<void> {
   ) {
     return;
   }
+  detailsRequestId += 1;
+  loadingDetails.value = false;
   saving.value = true;
   error.value = '';
   message.value = '';
@@ -647,6 +684,20 @@ watch([search, exactMatch], () => {
 watch(selectedCollectionId, refreshInventory);
 watch(selectedCollectionId, resetCollectionDraft);
 
+watch(
+  () => route.query.collection_id,
+  () => {
+    const routeCollectionId = collectionIdFromRoute();
+    if (
+      routeCollectionId &&
+      routeCollectionId !== selectedCollectionId.value &&
+      collections.value.some((collection) => collection.id === routeCollectionId)
+    ) {
+      selectCollection(routeCollectionId, false);
+    }
+  },
+);
+
 watch(imageNormalUrl, (url) => {
   previewImageLoading.value = Boolean(url);
 });
@@ -671,8 +722,7 @@ onMounted(async () => {
   document.addEventListener('click', handleDocumentClick);
   players.value = await listWorkspacePlayers();
   collections.value = await listWorkspaceCollections();
-  selectedCollectionId.value =
-    collections.value.find((collection) => collection.is_default)?.id ?? collections.value[0]?.id ?? null;
+  selectedCollectionId.value = getInitialCollectionId();
 });
 
 onUnmounted(() => {
@@ -681,7 +731,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <section class="collection-workspace">
+  <section class="collection-workspace" :class="{ 'sidebar-is-collapsed': sidebarCollapsed }">
     <aside class="collection-sidebar" :class="{ collapsed: sidebarCollapsed }">
       <Button
         icon="pi pi-bars"
@@ -701,7 +751,10 @@ onUnmounted(() => {
             @click="selectCollection(collection.id)"
           >
             <span>{{ collection.name }}</span>
-            <i v-if="selectedCollectionId === collection.id" class="pi pi-check" />
+            <span class="sidebar-item-icons">
+              <i v-if="collection.is_default" class="pi pi-star-fill" title="Primary collection" />
+              <i v-if="collection.is_wishlist" class="pi pi-heart-fill" title="Wishlist" />
+            </span>
           </button>
         </div>
         <div class="sidebar-actions">
@@ -788,7 +841,11 @@ onUnmounted(() => {
           />
         </label>
         <label class="toggle-field">
-          <ToggleSwitch v-model="collectionIsDefault" />
+          <ToggleSwitch
+            v-model="collectionIsDefault"
+            :disabled="selectedCollection?.is_default"
+            title="Choose another collection to move the primary marker"
+          />
           <span>Primary collection</span>
         </label>
         <label class="toggle-field">

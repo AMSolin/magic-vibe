@@ -1,4 +1,5 @@
 from time import time
+from urllib.error import URLError
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -19,7 +20,10 @@ from app.schemas.workspace import (
     WorkspaceCollectionItemUpdate,
     WorkspaceCollectionRead,
     WorkspaceCollectionUpdate,
+    WorkspaceDeckRead,
+    WorkspacePlayerCreate,
     WorkspacePlayerRead,
+    WorkspacePlayerUpdate,
 )
 from app.services import catalog, scryfall
 
@@ -30,6 +34,17 @@ def _catalog_error(error: Exception) -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail=str(error),
+    )
+
+
+def _scryfall_error(error: Exception) -> HTTPException:
+    if isinstance(error, URLError):
+        detail = "Scryfall is unavailable. Try again later or use already cached card data."
+    else:
+        detail = str(error)
+    return HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail=detail,
     )
 
 
@@ -156,13 +171,11 @@ def _validated_item_identity(
 
 def _assign_replacement_default(
     db: Session,
-    player_id: int,
     excluded_collection_id: int,
 ) -> Collection | None:
     replacement = db.scalar(
         select(Collection)
         .where(
-            Collection.player_id == player_id,
             Collection.id != excluded_collection_id,
             Collection.is_wishlist.is_(False),
         )
@@ -184,7 +197,6 @@ def _ensure_default_collection(db: Session, collection: Collection) -> None:
         )
     for other_collection in db.scalars(
         select(Collection).where(
-            Collection.player_id == collection.player_id,
             Collection.id != collection.id,
             Collection.is_default.is_(True),
         )
@@ -203,14 +215,193 @@ def _commit_collection(db: Session) -> None:
         ) from error
 
 
+def _ensure_default_player(db: Session, player: Player) -> None:
+    if not player.is_default:
+        return
+    for other_player in db.scalars(
+        select(Player).where(Player.id != player.id, Player.is_default.is_(True))
+    ):
+        other_player.is_default = False
+
+
+def _make_default_player(db: Session, player: Player) -> None:
+    for other_player in db.scalars(
+        select(Player).where(Player.id != player.id, Player.is_default.is_(True))
+    ):
+        other_player.is_default = False
+    db.flush()
+    player.is_default = True
+
+
+def _assign_replacement_default_player(db: Session, excluded_player_id: int) -> Player | None:
+    replacement = db.scalar(
+        select(Player)
+        .where(Player.id != excluded_player_id)
+        .order_by(Player.created_at, Player.id)
+        .limit(1)
+    )
+    if replacement is not None:
+        replacement.is_default = True
+    return replacement
+
+
+def _commit_player(db: Session) -> None:
+    try:
+        db.commit()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Player with this name already exists",
+        ) from error
+
+
 @router.get("/players", response_model=list[WorkspacePlayerRead])
 def list_players(db: Session = Depends(get_user_data_db)) -> list[Player]:
     return list(db.scalars(select(Player).order_by(Player.created_at, Player.name)))
 
 
+@router.post("/players", response_model=WorkspacePlayerRead, status_code=status.HTTP_201_CREATED)
+def create_player(
+    payload: WorkspacePlayerCreate,
+    db: Session = Depends(get_user_data_db),
+) -> Player:
+    name = payload.name.strip()
+    if not name:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Name is required")
+    requested_default = payload.is_default
+    player = Player(
+        name=name,
+        is_default=False,
+        created_at=payload.created_at if payload.created_at is not None else int(time()),
+    )
+    db.add(player)
+    try:
+        db.flush()
+    except IntegrityError as error:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Player with this name already exists",
+        ) from error
+    should_be_default = requested_default or (
+        db.scalar(select(Player.id).where(Player.id != player.id, Player.is_default.is_(True)))
+        is None
+    )
+    if should_be_default:
+        _make_default_player(db, player)
+    _commit_player(db)
+    db.refresh(player)
+    return player
+
+
+@router.patch("/players/{player_id}", response_model=WorkspacePlayerRead)
+def update_player(
+    player_id: int,
+    payload: WorkspacePlayerUpdate,
+    db: Session = Depends(get_user_data_db),
+) -> Player:
+    player = db.get(Player, player_id)
+    if player is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
+    update_data = payload.model_dump(exclude_unset=True)
+    if "name" in update_data:
+        update_data["name"] = update_data["name"].strip()
+        if not update_data["name"]:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Name is required",
+            )
+    was_default = player.is_default
+    requested_default = update_data.pop("is_default", None)
+    for field, value in update_data.items():
+        setattr(player, field, value)
+    if requested_default is True:
+        _make_default_player(db, player)
+    elif requested_default is False:
+        if player.is_default:
+            db.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Choose another preferred player before clearing this one",
+            )
+        player.is_default = False
+    if was_default and not player.is_default:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Choose another preferred player before clearing this one",
+        )
+    _ensure_default_player(db, player)
+    _commit_player(db)
+    db.refresh(player)
+    return player
+
+
+@router.delete("/players/{player_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_player(
+    player_id: int,
+    confirm_collection_owner_clear: bool = False,
+    db: Session = Depends(get_user_data_db),
+) -> None:
+    player = db.get(Player, player_id)
+    if player is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
+    if db.scalar(select(Player.id).where(Player.id != player.id).limit(1)) is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="At least one player must remain",
+        )
+    if db.scalar(select(Deck.id).where(Deck.player_id == player.id).limit(1)) is not None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Player has decks and cannot be deleted",
+        )
+    affected_collections = list(
+        db.scalars(
+            select(Collection)
+            .where(Collection.player_id == player.id)
+            .order_by(Collection.created_at, Collection.name)
+        )
+    )
+    if affected_collections and not confirm_collection_owner_clear:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Player owns collections",
+                "collections": [
+                    {"id": collection.id, "name": collection.name}
+                    for collection in affected_collections
+                ],
+            },
+        )
+    replacement = (
+        db.scalar(
+            select(Player)
+            .where(Player.id != player.id)
+            .order_by(Player.created_at, Player.id)
+            .limit(1)
+        )
+        if player.is_default
+        else None
+    )
+    for collection in affected_collections:
+        collection.player_id = None
+    db.delete(player)
+    db.flush()
+    if replacement is not None:
+        replacement.is_default = True
+    db.commit()
+
+
 @router.get("/collections", response_model=list[WorkspaceCollectionRead])
 def list_collections(db: Session = Depends(get_user_data_db)) -> list[Collection]:
     return list(db.scalars(select(Collection).order_by(Collection.created_at, Collection.name)))
+
+
+@router.get("/decks", response_model=list[WorkspaceDeckRead])
+def list_decks(db: Session = Depends(get_user_data_db)) -> list[Deck]:
+    return list(db.scalars(select(Deck).order_by(Deck.created_at, Deck.name)))
 
 
 @router.post(
@@ -247,7 +438,6 @@ def create_collection(
         not collection.is_wishlist
         and db.scalar(
             select(Collection.id).where(
-                Collection.player_id == collection.player_id,
                 Collection.id != collection.id,
                 Collection.is_default.is_(True),
             )
@@ -274,24 +464,37 @@ def update_collection(
     requested_player_id = update_data.get("player_id")
     if requested_player_id is not None and db.get(Player, requested_player_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
-    previous_player_id = collection.player_id
     was_default = collection.is_default
-    for field, value in update_data.items():
-        setattr(collection, field, value)
-    if collection.is_default and collection.is_wishlist:
-        db.rollback()
+    requested_default = update_data.pop("is_default", None)
+    next_is_default = requested_default if requested_default is not None else collection.is_default
+    next_is_wishlist = update_data.get("is_wishlist", collection.is_wishlist)
+    if next_is_default and next_is_wishlist:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Wishlist collection cannot be primary",
         )
-    if was_default and (not collection.is_default or collection.player_id != previous_player_id):
-        replacement = _assign_replacement_default(db, previous_player_id, collection.id)
-        if replacement is None and collection.player_id == previous_player_id:
+    for field, value in update_data.items():
+        setattr(collection, field, value)
+    if was_default and requested_default is False:
+        replacement = _assign_replacement_default(db, collection.id)
+        if replacement is None:
             db.rollback()
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot clear the only primary collection",
             )
+    if requested_default is True:
+        for other_collection in db.scalars(
+            select(Collection).where(
+                Collection.id != collection.id,
+                Collection.is_default.is_(True),
+            )
+        ):
+            other_collection.is_default = False
+        db.flush()
+        collection.is_default = True
+    elif requested_default is False:
+        collection.is_default = False
     _ensure_default_collection(db, collection)
     _commit_collection(db)
     db.refresh(collection)
@@ -341,7 +544,6 @@ def delete_collection(
         replacement = db.scalar(
             select(Collection)
             .where(
-                Collection.player_id == collection.player_id,
                 Collection.id != collection.id,
                 Collection.is_wishlist.is_(False),
             )
@@ -402,7 +604,7 @@ def get_printing_details(
         )
         card = _localized_card_details(printing_id, card, requested_language_code)
     except Exception as error:
-        raise _catalog_error(error) from error
+        raise _scryfall_error(error) from error
     language_query = f"?language_code={requested_language_code}"
     return CardDetailsRead(
         printing_id=printing_id,
@@ -437,7 +639,7 @@ def get_printing_image(
             face_order=face_order,
         )
     except Exception as error:
-        raise _catalog_error(error) from error
+        raise _scryfall_error(error) from error
     return FileResponse(image_path, media_type=media_type)
 
 

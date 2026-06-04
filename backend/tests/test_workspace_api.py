@@ -1,7 +1,7 @@
 import sqlite3
 from collections.abc import Generator
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from uuid import UUID
 
 import pytest
@@ -195,7 +195,7 @@ def test_workspace_search_and_printing_options(workspace_client: TestClient) -> 
 def test_workspace_collection_settings_crud(workspace_client: TestClient) -> None:
     players = workspace_client.get("/api/workspace/players")
     assert players.status_code == 200
-    assert players.json() == [{"id": 1, "name": "Player", "is_default": True}]
+    assert players.json() == [{"id": 1, "name": "Player", "is_default": True, "created_at": 1}]
 
     created = workspace_client.post(
         "/api/workspace/collections",
@@ -208,6 +208,14 @@ def test_workspace_collection_settings_crud(workspace_client: TestClient) -> Non
     assert created.status_code == 201
     assert created.json()["player_id"] == 1
     assert created.json()["is_default"] is False
+
+    detached_default = workspace_client.patch(
+        "/api/workspace/collections/1",
+        json={"player_id": None},
+    )
+    assert detached_default.status_code == 200
+    assert detached_default.json()["player_id"] is None
+    assert detached_default.json()["is_default"] is True
 
     updated = workspace_client.patch(
         f"/api/workspace/collections/{created.json()['id']}",
@@ -231,6 +239,91 @@ def test_workspace_collection_settings_crud(workspace_client: TestClient) -> Non
     assert workspace_client.get("/api/workspace/collections").json()[0]["is_default"] is True
 
 
+def test_workspace_player_asset_lists_include_decks(workspace_client: TestClient) -> None:
+    decks = workspace_client.get("/api/workspace/decks")
+
+    assert decks.status_code == 200
+    assert decks.json() == []
+
+
+def test_workspace_player_settings_crud(workspace_client: TestClient) -> None:
+    created = workspace_client.post(
+        "/api/workspace/players",
+        json={"name": "Second player", "is_default": True, "created_at": 1_800_000_000},
+    )
+    assert created.status_code == 201
+    assert created.json()["name"] == "Second player"
+    assert created.json()["is_default"] is True
+    assert created.json()["created_at"] == 1_800_000_000
+
+    players_after_create = workspace_client.get("/api/workspace/players").json()
+    first_player = next(player for player in players_after_create if player["name"] == "Player")
+    assert first_player["is_default"] is False
+
+    updated = workspace_client.patch(
+        f"/api/workspace/players/{created.json()['id']}",
+        json={"name": "Renamed player", "created_at": 1_810_000_000},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["name"] == "Renamed player"
+    assert updated.json()["created_at"] == 1_810_000_000
+
+    deleted = workspace_client.delete(f"/api/workspace/players/{created.json()['id']}")
+    assert deleted.status_code == 204
+    assert workspace_client.get("/api/workspace/players").json()[0]["is_default"] is True
+
+
+def test_workspace_player_settings_validation(workspace_client: TestClient) -> None:
+    duplicate = workspace_client.post("/api/workspace/players", json={"name": "Player"})
+    clear_only_preferred = workspace_client.patch("/api/workspace/players/1", json={"is_default": False})
+    delete_only_player = workspace_client.delete("/api/workspace/players/1")
+    second_player = workspace_client.post("/api/workspace/players", json={"name": "Second player"})
+    clear_preferred_with_replacement_available = workspace_client.patch(
+        "/api/workspace/players/1",
+        json={"is_default": False},
+    )
+    make_second_preferred = workspace_client.patch(
+        f"/api/workspace/players/{second_player.json()['id']}",
+        json={"is_default": True},
+    )
+    delete_linked_player = workspace_client.delete("/api/workspace/players/1")
+    confirmed_delete = workspace_client.delete(
+        "/api/workspace/players/1",
+        params={"confirm_collection_owner_clear": "true"},
+    )
+    unnamed = workspace_client.post("/api/workspace/players", json={"name": "   "})
+
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"] == "Player with this name already exists"
+    assert clear_only_preferred.status_code == 400
+    assert clear_only_preferred.json()["detail"] == (
+        "Choose another preferred player before clearing this one"
+    )
+    assert delete_only_player.status_code == 400
+    assert delete_only_player.json()["detail"] == "At least one player must remain"
+    assert second_player.status_code == 201
+    assert clear_preferred_with_replacement_available.status_code == 400
+    assert clear_preferred_with_replacement_available.json()["detail"] == (
+        "Choose another preferred player before clearing this one"
+    )
+    assert make_second_preferred.status_code == 200
+    assert make_second_preferred.json()["is_default"] is True
+    players_after_replacement = workspace_client.get("/api/workspace/players").json()
+    assert next(player for player in players_after_replacement if player["name"] == "Second player")[
+        "is_default"
+    ] is True
+    assert delete_linked_player.status_code == 409
+    assert delete_linked_player.json()["detail"] == {
+        "message": "Player owns collections",
+        "collections": [{"id": 1, "name": "My collection"}],
+    }
+    assert confirmed_delete.status_code == 204
+    collections_after_player_delete = workspace_client.get("/api/workspace/collections").json()
+    assert collections_after_player_delete[0]["player_id"] is None
+    assert collections_after_player_delete[0]["is_default"] is True
+    assert unnamed.status_code == 422
+
+
 def test_workspace_collection_settings_validation(workspace_client: TestClient) -> None:
     duplicate = workspace_client.post(
         "/api/workspace/collections",
@@ -244,17 +337,28 @@ def test_workspace_collection_settings_validation(workspace_client: TestClient) 
         "/api/workspace/collections/1",
         json={"is_default": False},
     )
+    delete_only_collection = workspace_client.delete("/api/workspace/collections/1")
+    wishlist = workspace_client.post(
+        "/api/workspace/collections",
+        json={"name": "Wishlist", "player_id": 1, "is_wishlist": True},
+    )
+    update_wishlist_to_primary = workspace_client.patch(
+        f"/api/workspace/collections/{wishlist.json()['id']}",
+        json={"is_default": True},
+    )
     wishlist_primary = workspace_client.post(
         "/api/workspace/collections",
-        json={"name": "Wishlist", "player_id": 1, "is_default": True, "is_wishlist": True},
+        json={"name": "Another wishlist", "player_id": 1, "is_default": True, "is_wishlist": True},
     )
-    delete_only_collection = workspace_client.delete("/api/workspace/collections/1")
 
     assert duplicate.status_code == 409
     assert update_primary_to_wishlist.status_code == 400
     assert update_primary_to_wishlist.json()["detail"] == "Wishlist collection cannot be primary"
     assert clear_only_primary.status_code == 400
     assert clear_only_primary.json()["detail"] == "Cannot clear the only primary collection"
+    assert wishlist.status_code == 201
+    assert update_wishlist_to_primary.status_code == 400
+    assert update_wishlist_to_primary.json()["detail"] == "Wishlist collection cannot be primary"
     assert wishlist_primary.status_code == 400
     assert wishlist_primary.json()["detail"] == "Wishlist collection cannot be primary"
     assert delete_only_collection.status_code == 400
@@ -425,6 +529,24 @@ def test_workspace_printing_details_use_catalog_localization(
         "\u0411\u0430\u0437\u043e\u0432\u0430\u044f \u0437\u0435\u043c\u043b\u044f - \u0411\u043e\u043b\u043e\u0442\u043e"
     )
     assert card["printed_text"] == "({T}: \u0414\u043e\u0431\u0430\u0432\u044c\u0442\u0435 {B}.)"
+
+
+def test_workspace_printing_details_hide_raw_scryfall_network_error(
+    workspace_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        scryfall,
+        "get_card_json",
+        lambda *args: (_ for _ in ()).throw(URLError("connection refused")),
+    )
+
+    response = workspace_client.get("/api/workspace/printings/1/details?language_code=en")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == (
+        "Scryfall is unavailable. Try again later or use already cached card data."
+    )
 
 
 def test_scryfall_json_and_image_are_cached(

@@ -167,7 +167,7 @@ export type ScryfallSymbols = Record<string, ScryfallSymbol>;
 
 export type WorkspaceCollection = {
   id: number;
-  player_id: number;
+  player_id: number | null;
   name: string;
   is_default: boolean;
   is_wishlist: boolean;
@@ -179,11 +179,29 @@ export type WorkspacePlayer = {
   id: number;
   name: string;
   is_default: boolean;
+  created_at: number;
+};
+
+export type WorkspaceDeck = {
+  id: number;
+  player_id: number;
+  name: string;
+  is_default: boolean;
+  is_wishlist: boolean;
+  wishlist_collection_id: number | null;
+  note: string | null;
+  created_at: number;
+};
+
+export type WorkspacePlayerWrite = {
+  name: string;
+  is_default: boolean;
+  created_at?: number;
 };
 
 export type WorkspaceCollectionWrite = {
   name: string;
-  player_id: number;
+  player_id: number | null;
   note: string | null;
   is_default: boolean;
   is_wishlist: boolean;
@@ -547,6 +565,39 @@ export function listWorkspaceCollections(): Promise<WorkspaceCollection[]> {
 
 export function listWorkspacePlayers(): Promise<WorkspacePlayer[]> {
   return request<WorkspacePlayer[]>('/api/workspace/players');
+}
+
+export function listWorkspaceDecks(): Promise<WorkspaceDeck[]> {
+  return request<WorkspaceDeck[]>('/api/workspace/decks');
+}
+
+export function createWorkspacePlayer(payload: WorkspacePlayerWrite): Promise<WorkspacePlayer> {
+  return request<WorkspacePlayer>('/api/workspace/players', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateWorkspacePlayer(
+  playerId: number,
+  payload: WorkspacePlayerWrite,
+): Promise<WorkspacePlayer> {
+  return request<WorkspacePlayer>(`/api/workspace/players/${playerId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteWorkspacePlayer(
+  playerId: number,
+  confirmCollectionOwnerClear = false,
+): Promise<void> {
+  const params = confirmCollectionOwnerClear
+    ? `?${new URLSearchParams({ confirm_collection_owner_clear: 'true' }).toString()}`
+    : '';
+  return request<void>(`/api/workspace/players/${playerId}${params}`, {
+    method: 'DELETE',
+  });
 }
 
 export function createWorkspaceCollection(

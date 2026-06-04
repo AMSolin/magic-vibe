@@ -7,6 +7,19 @@ class WorkspacePlayerRead(BaseModel):
     id: int
     name: str
     is_default: bool
+    created_at: int
+
+
+class WorkspacePlayerCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    is_default: bool = False
+    created_at: int | None = Field(default=None, ge=0)
+
+
+class WorkspacePlayerUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    is_default: bool | None = None
+    created_at: int | None = Field(default=None, ge=0)
 
 
 class WorkspaceCollectionCreate(BaseModel):
@@ -31,10 +44,23 @@ class WorkspaceCollectionRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int
+    player_id: int | None
+    name: str
+    is_default: bool
+    is_wishlist: bool
+    note: str | None
+    created_at: int
+
+
+class WorkspaceDeckRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
     player_id: int
     name: str
     is_default: bool
     is_wishlist: bool
+    wishlist_collection_id: int | None
     note: str | None
     created_at: int
 

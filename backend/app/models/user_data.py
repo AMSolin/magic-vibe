@@ -57,22 +57,22 @@ class Collection(UserDataBase):
             name="ck_collections_default_not_wishlist",
         ),
         Index(
-            "uq_collections_player_default",
-            "player_id",
+            "uq_collections_default",
+            "is_default",
             unique=True,
             sqlite_where=text("is_default = 1"),
         ),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    player_id: Mapped[int] = mapped_column(ForeignKey("players.id"), index=True)
+    player_id: Mapped[int | None] = mapped_column(ForeignKey("players.id"), index=True)
     name: Mapped[str] = mapped_column(String(255))
     note: Mapped[str | None] = mapped_column(Text)
     is_default: Mapped[bool] = mapped_column(Boolean(create_constraint=True), default=False)
     is_wishlist: Mapped[bool] = mapped_column(Boolean(create_constraint=True), default=False)
     created_at: Mapped[int] = mapped_column(Integer)
 
-    player: Mapped[Player] = relationship(back_populates="collections")
+    player: Mapped[Player | None] = relationship(back_populates="collections")
     items: Mapped[list["CollectionItem"]] = relationship(
         back_populates="collection",
         cascade="all, delete-orphan",
