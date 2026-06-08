@@ -193,3 +193,19 @@ def get_card_image(
     else:
         content_type = None
     return cache_path, content_type or mimetypes.guess_type(cache_path.name)[0] or "image/jpeg"
+
+
+def get_cached_card_image(
+    *,
+    scryfall_id: str,
+    version: str,
+    face_order: int = 0,
+) -> tuple[Path, str] | None:
+    image_root = _cache_root() / "images"
+    if not image_root.is_dir():
+        return None
+    prefix = f"{scryfall_id}-{face_order}-{version}"
+    for path in image_root.glob(f"{prefix}.*"):
+        if path.is_file():
+            return path, mimetypes.guess_type(path.name)[0] or "image/jpeg"
+    return None

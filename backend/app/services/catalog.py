@@ -174,7 +174,7 @@ def get_printing_by_scryfall_id(scryfall_id: bytes) -> dict | None:
             select
                 p.id, p.scryfall_id, p.oracle_id, p.set_code, p.collector_number,
                 p.language_code, p.name, p.rarity, f.mana_cost, f.type,
-                l.name as language, s.keyrune_code
+                l.name as language, s.keyrune_code, s.release_date
             from card_printings as p
             join card_printing_faces as f on f.printing_id = p.id and f.face_order = 0
             join languages as l on l.code = p.language_code
@@ -189,6 +189,35 @@ def get_printing_by_scryfall_id(scryfall_id: bytes) -> dict | None:
         **dict(row),
         "scryfall_id": _uuid_text(row["scryfall_id"]),
         "oracle_id": _uuid_text(row["oracle_id"]),
+    }
+
+
+def get_printings_by_scryfall_ids(scryfall_ids: list[bytes]) -> dict[bytes, dict]:
+    if not scryfall_ids:
+        return {}
+    placeholders = ",".join("?" for _ in scryfall_ids)
+    with catalog_connection() as catalog:
+        rows = catalog.execute(
+            f"""
+            select
+                p.id, p.scryfall_id, p.oracle_id, p.set_code, p.collector_number,
+                p.language_code, p.name, p.rarity, f.mana_cost, f.type,
+                l.name as language, s.keyrune_code, s.release_date
+            from card_printings as p
+            join card_printing_faces as f on f.printing_id = p.id and f.face_order = 0
+            join languages as l on l.code = p.language_code
+            join sets as s on s.code = p.set_code
+            where p.scryfall_id in ({placeholders})
+            """,
+            scryfall_ids,
+        ).fetchall()
+    return {
+        row["scryfall_id"]: {
+            **dict(row),
+            "scryfall_id": _uuid_text(row["scryfall_id"]),
+            "oracle_id": _uuid_text(row["oracle_id"]),
+        }
+        for row in rows
     }
 
 

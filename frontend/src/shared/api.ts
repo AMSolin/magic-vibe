@@ -202,10 +202,63 @@ export type WorkspaceDeckWrite = {
 
 export type WorkspaceDeckItem = {
   id: number;
+  collection_item_id: number | null;
+  printing_id: number | null;
+  release_date: number | null;
+  language_code: string | null;
+  collection_id: number | null;
+  collection_name: string | null;
+  set_code: string | null;
+  keyrune_code: string | null;
+  collector_number: string | null;
+  language: string | null;
+  finish_id: number | null;
+  finish: string | null;
+  condition_code: string | null;
+  owned_quantity: number | null;
+  allocated_quantity: number | null;
+  available_quantity: number | null;
   section: string;
   quantity: number;
   name: string;
   oracle_id: string;
+};
+
+export type WorkspaceDeckInventoryAllocation = {
+  deck_id: number;
+  deck_name: string;
+  section: string;
+  quantity: number;
+};
+
+export type WorkspaceDeckInventoryItem = {
+  collection_item_id: number;
+  collection_id: number;
+  collection_name: string;
+  printing_id: number;
+  release_date: number;
+  name: string;
+  set_code: string;
+  keyrune_code: string;
+  collector_number: string;
+  language_code: string;
+  language: string;
+  finish_id: number;
+  finish: string;
+  condition_code: string;
+  owned_quantity: number;
+  allocated_quantity: number;
+  available_quantity: number;
+  allocations: WorkspaceDeckInventoryAllocation[];
+};
+
+export type WorkspaceDeckInventorySearchResult = {
+  oracle_id: string;
+  name: string;
+  language_code: string;
+  total_owned: number;
+  total_available: number;
+  items: WorkspaceDeckInventoryItem[];
 };
 
 export type WorkspacePlayerWrite = {
@@ -611,6 +664,54 @@ export function deleteWorkspaceDeck(deckId: number): Promise<void> {
 
 export function listWorkspaceDeckItems(deckId: number): Promise<WorkspaceDeckItem[]> {
   return request<WorkspaceDeckItem[]>(`/api/workspace/decks/${deckId}/items`);
+}
+
+export function searchWorkspaceDeckInventory(
+  deckId: number,
+  query: string,
+  oracleId?: string,
+): Promise<WorkspaceDeckInventorySearchResult[]> {
+  const params = new URLSearchParams({ query });
+  if (oracleId) {
+    params.set('oracle_id', oracleId);
+  }
+  return request<WorkspaceDeckInventorySearchResult[]>(
+    `/api/workspace/decks/${deckId}/items/search?${params.toString()}`,
+  );
+}
+
+export function addWorkspaceDeckItem(
+  deckId: number,
+  payload: {
+    collection_item_id: number;
+    section: string;
+    quantity?: number;
+  },
+): Promise<WorkspaceDeckItem> {
+  return request<WorkspaceDeckItem>(`/api/workspace/decks/${deckId}/items`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateWorkspaceDeckItem(
+  deckId: number,
+  itemId: number,
+  payload: {
+    section?: string;
+    quantity?: number;
+  },
+): Promise<WorkspaceDeckItem> {
+  return request<WorkspaceDeckItem>(`/api/workspace/decks/${deckId}/items/${itemId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteWorkspaceDeckItem(deckId: number, itemId: number): Promise<void> {
+  return request<void>(`/api/workspace/decks/${deckId}/items/${itemId}`, {
+    method: 'DELETE',
+  });
 }
 
 export function createWorkspacePlayer(payload: WorkspacePlayerWrite): Promise<WorkspacePlayer> {

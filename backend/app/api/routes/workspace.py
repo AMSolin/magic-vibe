@@ -4,7 +4,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -21,7 +21,11 @@ from app.schemas.workspace import (
     WorkspaceCollectionRead,
     WorkspaceCollectionUpdate,
     WorkspaceDeckCreate,
+    WorkspaceDeckInventoryItemRead,
+    WorkspaceDeckInventorySearchResultRead,
+    WorkspaceDeckItemCreate,
     WorkspaceDeckItemRead,
+    WorkspaceDeckItemUpdate,
     WorkspaceDeckRead,
     WorkspaceDeckUpdate,
     WorkspacePlayerCreate,
@@ -268,6 +272,198 @@ def _commit_deck(db: Session) -> None:
             status_code=status.HTTP_409_CONFLICT,
             detail="Deck with this name already exists for this owner and deck type",
         ) from error
+
+
+def _allocated_quantity(
+    db: Session,
+    collection_item_id: int,
+    *,
+    excluded_deck_item_id: int | None = None,
+) -> int:
+    statement = select(func.coalesce(func.sum(DeckItem.quantity), 0)).where(
+        DeckItem.collection_item_id == collection_item_id
+    )
+    if excluded_deck_item_id is not None:
+        statement = statement.where(DeckItem.id != excluded_deck_item_id)
+    return db.scalar(statement) or 0
+
+
+def _load_physical_deck_item(db: Session, deck_id: int, item_id: int) -> tuple[Deck, DeckItem]:
+    deck = db.get(Deck, deck_id)
+    if deck is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deck not found")
+    _ensure_physical_deck(deck)
+    item = db.scalar(
+        select(DeckItem).where(
+            DeckItem.id == item_id,
+            DeckItem.deck_id == deck.id,
+        )
+    )
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deck item not found")
+    return deck, item
+
+
+def _allocation_breakdown(
+    db: Session,
+    collection_item_ids: list[int],
+) -> dict[int, list[dict]]:
+    if not collection_item_ids:
+        return {}
+    rows = db.execute(
+        select(
+            DeckItem.collection_item_id,
+            DeckItem.deck_id,
+            Deck.name,
+            DeckItem.section,
+            DeckItem.quantity,
+        )
+        .join(Deck, Deck.id == DeckItem.deck_id)
+        .where(DeckItem.collection_item_id.in_(collection_item_ids))
+        .order_by(Deck.name, DeckItem.section, DeckItem.id)
+    ).all()
+    breakdown: dict[int, list[dict]] = {}
+    for collection_item_id, deck_id, deck_name, section, quantity in rows:
+        breakdown.setdefault(collection_item_id, []).append(
+            {
+                "deck_id": deck_id,
+                "deck_name": deck_name,
+                "section": section,
+                "quantity": quantity,
+            }
+        )
+    return breakdown
+
+
+def _inventory_item_read(
+    item: CollectionItem,
+    printing: dict,
+    allocations: list[dict],
+    display_language_code: str | None = None,
+    display_name: str | None = None,
+) -> WorkspaceDeckInventoryItemRead:
+    try:
+        finish = catalog.finish_name(item.finish_id)
+        language = catalog.language_name(item.language_code)
+        faces = catalog.get_localized_printing_faces(
+            printing["id"],
+            display_language_code or item.language_code,
+        )
+    except FileNotFoundError as error:
+        raise _catalog_error(error) from error
+    if finish is None or language is None or not faces:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Collection item no longer resolves to the installed catalog",
+        )
+    allocated_quantity = sum(allocation["quantity"] for allocation in allocations)
+    return WorkspaceDeckInventoryItemRead(
+        collection_item_id=item.id,
+        collection_id=item.collection_id,
+        collection_name=item.collection.name,
+        printing_id=printing["id"],
+        release_date=printing["release_date"],
+        name=display_name or faces[0]["name"],
+        set_code=printing["set_code"],
+        keyrune_code=printing["keyrune_code"],
+        collector_number=printing["collector_number"],
+        language_code=item.language_code,
+        language=language,
+        finish_id=item.finish_id,
+        finish=finish,
+        condition_code=item.condition_code,
+        owned_quantity=item.quantity,
+        allocated_quantity=allocated_quantity,
+        available_quantity=max(0, item.quantity - allocated_quantity),
+        allocations=allocations,
+    )
+
+
+def _deck_item_read(db: Session, item: DeckItem) -> WorkspaceDeckItemRead:
+    try:
+        printing = catalog.get_printing_by_scryfall_id(item.collection_item.scryfall_id)
+        finish = catalog.finish_name(item.collection_item.finish_id)
+        language = catalog.language_name(item.collection_item.language_code)
+        faces = (
+            catalog.get_localized_printing_faces(
+                printing["id"],
+                item.collection_item.language_code,
+            )
+            if printing
+            else []
+        )
+    except FileNotFoundError as error:
+        raise _catalog_error(error) from error
+    if printing is None or finish is None or language is None or not faces:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Deck item no longer resolves to the installed catalog",
+        )
+    allocated_quantity = _allocated_quantity(db, item.collection_item_id)
+    return WorkspaceDeckItemRead(
+        id=item.id,
+        collection_item_id=item.collection_item_id,
+        printing_id=printing["id"],
+        release_date=printing["release_date"],
+        language_code=item.collection_item.language_code,
+        collection_id=item.collection_item.collection_id,
+        collection_name=item.collection_item.collection.name,
+        set_code=printing["set_code"],
+        keyrune_code=printing["keyrune_code"],
+        collector_number=printing["collector_number"],
+        language=language,
+        finish_id=item.collection_item.finish_id,
+        finish=finish,
+        condition_code=item.collection_item.condition_code,
+        owned_quantity=item.collection_item.quantity,
+        allocated_quantity=allocated_quantity,
+        available_quantity=max(0, item.collection_item.quantity - allocated_quantity),
+        section=item.section,
+        quantity=item.quantity,
+        name=faces[0]["name"],
+        oracle_id=printing["oracle_id"],
+    )
+
+
+def _ensure_physical_deck(deck: Deck) -> None:
+    if deck.is_wish:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Wish deck items are not implemented yet",
+        )
+
+
+def _cached_oracle_image(
+    printing: dict,
+    *,
+    version: str,
+    face_order: int,
+    language_code: str,
+) -> tuple[object, str] | None:
+    try:
+        printings = catalog.list_printings(printing["oracle_id"])
+    except (FileNotFoundError, ValueError):
+        return None
+
+    def priority(item: dict) -> tuple[int, int]:
+        item_language = item["language_code"]
+        if item_language == language_code:
+            language_rank = 0
+        elif item_language == "en":
+            language_rank = 1
+        else:
+            language_rank = 2
+        return language_rank, -int(item["release_date"])
+
+    for candidate in sorted(printings, key=priority):
+        cached_image = scryfall.get_cached_card_image(
+            scryfall_id=candidate["scryfall_id"],
+            version=version,
+            face_order=face_order,
+        )
+        if cached_image is not None:
+            return cached_image
+    return None
 
 
 @router.get("/players", response_model=list[WorkspacePlayerRead])
@@ -521,16 +717,238 @@ def list_deck_items(
             .order_by(DeckItem.section, DeckItem.id)
         )
     )
-    return [
-        WorkspaceDeckItemRead(
-            id=item.id,
-            section=item.section,
-            quantity=item.quantity,
-            name="Card",
-            oracle_id="",
+    return [_deck_item_read(db, item) for item in items]
+
+
+@router.get(
+    "/decks/{deck_id}/items/search",
+    response_model=list[WorkspaceDeckInventorySearchResultRead],
+)
+def search_physical_deck_inventory(
+    deck_id: int,
+    query: str = Query(default="", max_length=255),
+    oracle_id: str | None = Query(default=None),
+    db: Session = Depends(get_user_data_db),
+) -> list[WorkspaceDeckInventorySearchResultRead]:
+    deck = db.get(Deck, deck_id)
+    if deck is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deck not found")
+    _ensure_physical_deck(deck)
+    search_text = query.strip()
+    target_oracle_id = oracle_id.strip() if oracle_id else None
+    if target_oracle_id:
+        try:
+            UUID(target_oracle_id)
+        except ValueError as error:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Invalid oracle_id",
+            ) from error
+    if not search_text and target_oracle_id is None:
+        return []
+    matching_language_by_oracle_id: dict[str, str] = {}
+    matching_name_by_oracle_id: dict[str, str] = {}
+    if target_oracle_id is None:
+        try:
+            suggestions = catalog.search_card_names(search_text, exact=False, limit=50)
+        except FileNotFoundError as error:
+            raise _catalog_error(error) from error
+        for suggestion in suggestions:
+            matching_language_by_oracle_id.setdefault(
+                suggestion["oracle_id"],
+                suggestion["language_code"],
+            )
+            matching_name_by_oracle_id.setdefault(suggestion["oracle_id"], suggestion["name"])
+    matching_oracle_ids = (
+        {target_oracle_id}
+        if target_oracle_id is not None
+        else set(matching_language_by_oracle_id)
+    )
+    if not matching_oracle_ids:
+        return []
+    items = list(
+        db.scalars(
+            select(CollectionItem)
+            .join(Collection, Collection.id == CollectionItem.collection_id)
+            .where(Collection.is_wishlist.is_(False))
+            .order_by(Collection.name, CollectionItem.created_at.desc(), CollectionItem.id.desc())
         )
-        for item in items
-    ]
+    )
+    try:
+        printings = catalog.get_printings_by_scryfall_ids([item.scryfall_id for item in items])
+    except FileNotFoundError as error:
+        raise _catalog_error(error) from error
+    allocations = _allocation_breakdown(db, [item.id for item in items])
+    grouped: dict[str, WorkspaceDeckInventorySearchResultRead] = {}
+    for item in items:
+        printing = printings.get(item.scryfall_id)
+        if printing is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Collection item no longer resolves to the installed catalog",
+            )
+        if printing["oracle_id"] not in matching_oracle_ids:
+            continue
+        inventory_item = _inventory_item_read(
+            item,
+            printing,
+            allocations.get(item.id, []),
+            display_language_code=matching_language_by_oracle_id.get(printing["oracle_id"]),
+            display_name=matching_name_by_oracle_id.get(printing["oracle_id"]),
+        )
+        result = grouped.get(printing["oracle_id"])
+        if result is None:
+            result = WorkspaceDeckInventorySearchResultRead(
+                oracle_id=printing["oracle_id"],
+                name=inventory_item.name,
+                language_code=(
+                    matching_language_by_oracle_id.get(printing["oracle_id"])
+                    or inventory_item.language_code
+                ),
+                total_owned=0,
+                total_available=0,
+                items=[],
+            )
+            grouped[printing["oracle_id"]] = result
+        result.total_owned += inventory_item.owned_quantity
+        result.total_available += inventory_item.available_quantity
+        result.items.append(inventory_item)
+    return sorted(
+        grouped.values(),
+        key=lambda result: (result.name.casefold(), result.oracle_id),
+    )[:50]
+
+
+@router.post(
+    "/decks/{deck_id}/items",
+    response_model=WorkspaceDeckItemRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_deck_item(
+    deck_id: int,
+    payload: WorkspaceDeckItemCreate,
+    db: Session = Depends(get_user_data_db),
+) -> WorkspaceDeckItemRead:
+    deck = db.get(Deck, deck_id)
+    if deck is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deck not found")
+    _ensure_physical_deck(deck)
+    collection_item = db.get(CollectionItem, payload.collection_item_id)
+    if collection_item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection item not found")
+    if collection_item.collection.is_wishlist:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Physical decks can use only regular collection cards",
+        )
+    allocated_quantity = _allocated_quantity(db, collection_item.id)
+    if allocated_quantity + payload.quantity > collection_item.quantity:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Not enough available copies in collection",
+        )
+    item = db.scalar(
+        select(DeckItem).where(
+            DeckItem.deck_id == deck.id,
+            DeckItem.collection_item_id == collection_item.id,
+            DeckItem.section == payload.section,
+        )
+    )
+    if item is None:
+        item = DeckItem(
+            deck_id=deck.id,
+            collection_item_id=collection_item.id,
+            section=payload.section,
+            quantity=payload.quantity,
+        )
+        db.add(item)
+    else:
+        item.quantity += payload.quantity
+    deck.updated_at = int(time())
+    db.commit()
+    db.refresh(item)
+    return _deck_item_read(db, item)
+
+
+@router.patch(
+    "/decks/{deck_id}/items/{item_id}",
+    response_model=WorkspaceDeckItemRead,
+)
+def update_deck_item(
+    deck_id: int,
+    item_id: int,
+    payload: WorkspaceDeckItemUpdate,
+    db: Session = Depends(get_user_data_db),
+) -> WorkspaceDeckItemRead:
+    deck, item = _load_physical_deck_item(db, deck_id, item_id)
+    update_data = payload.model_dump(exclude_unset=True)
+    target_section = update_data.get("section", item.section)
+    if target_section != item.section:
+        move_quantity = update_data.get("quantity", item.quantity)
+        if move_quantity > item.quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot move more copies than the deck item contains",
+            )
+        target_item = db.scalar(
+            select(DeckItem).where(
+                DeckItem.deck_id == deck.id,
+                DeckItem.collection_item_id == item.collection_item_id,
+                DeckItem.section == target_section,
+            )
+        )
+        if target_item is None:
+            if move_quantity == item.quantity:
+                item.section = target_section
+                target_item = item
+            else:
+                item.quantity -= move_quantity
+                target_item = DeckItem(
+                    deck_id=deck.id,
+                    collection_item_id=item.collection_item_id,
+                    section=target_section,
+                    quantity=move_quantity,
+                )
+                db.add(target_item)
+        else:
+            target_item.quantity += move_quantity
+            if move_quantity == item.quantity:
+                db.delete(item)
+            else:
+                item.quantity -= move_quantity
+        item = target_item
+    else:
+        requested_quantity = update_data.get("quantity", item.quantity)
+        allocated_elsewhere = _allocated_quantity(
+            db,
+            item.collection_item_id,
+            excluded_deck_item_id=item.id,
+        )
+        if allocated_elsewhere + requested_quantity > item.collection_item.quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Not enough available copies in collection",
+            )
+        item.quantity = requested_quantity
+    deck.updated_at = int(time())
+    db.commit()
+    db.refresh(item)
+    return _deck_item_read(db, item)
+
+
+@router.delete(
+    "/decks/{deck_id}/items/{item_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_deck_item(
+    deck_id: int,
+    item_id: int,
+    db: Session = Depends(get_user_data_db),
+) -> None:
+    deck, item = _load_physical_deck_item(db, deck_id, item_id)
+    db.delete(item)
+    deck.updated_at = int(time())
+    db.commit()
 
 
 @router.post(
@@ -750,11 +1168,20 @@ def get_printing_image(
     if face_order < 0:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Card face not found")
     printing = _required_printing(printing_id)
+    cached_image = scryfall.get_cached_card_image(
+        scryfall_id=printing["scryfall_id"],
+        version=version,
+        face_order=face_order,
+    )
+    if cached_image is not None:
+        image_path, media_type = cached_image
+        return FileResponse(image_path, media_type=media_type)
+    requested_language_code = language_code or printing["language_code"]
     try:
         card = scryfall.get_card_json_for_image(
             printing["set_code"],
             printing["collector_number"],
-            language_code or printing["language_code"],
+            requested_language_code,
         )
         image_path, media_type = scryfall.get_card_image(
             card,
@@ -763,6 +1190,15 @@ def get_printing_image(
             face_order=face_order,
         )
     except Exception as error:
+        cached_oracle_image = _cached_oracle_image(
+            printing,
+            version=version,
+            face_order=face_order,
+            language_code=requested_language_code,
+        )
+        if cached_oracle_image is not None:
+            image_path, media_type = cached_oracle_image
+            return FileResponse(image_path, media_type=media_type)
         raise _scryfall_error(error) from error
     return FileResponse(image_path, media_type=media_type)
 

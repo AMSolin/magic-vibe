@@ -298,6 +298,200 @@ def test_workspace_deck_settings_crud(workspace_client: TestClient) -> None:
     assert deleted.status_code == 204
 
 
+def test_workspace_physical_deck_inventory_search_and_add(
+    workspace_client: TestClient,
+) -> None:
+    created_item = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 2},
+    ).json()
+    wishlist = workspace_client.post(
+        "/api/workspace/collections",
+        json={"name": "Wishlist", "player_id": 1, "is_wishlist": True},
+    ).json()
+    workspace_client.post(
+        f"/api/workspace/collections/{wishlist['id']}/items",
+        json={"printing_id": 1, "finish_id": 1, "condition_code": "NM", "quantity": 4},
+    )
+    deck = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Physical deck", "player_id": 1},
+    ).json()
+
+    initial_search = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"query": "swa"},
+    )
+    added = workspace_client.post(
+        f"/api/workspace/decks/{deck['id']}/items",
+        json={"collection_item_id": created_item["id"], "section": "main"},
+    )
+    incremented = workspace_client.post(
+        f"/api/workspace/decks/{deck['id']}/items",
+        json={"collection_item_id": created_item["id"], "section": "main"},
+    )
+    overflow = workspace_client.post(
+        f"/api/workspace/decks/{deck['id']}/items",
+        json={"collection_item_id": created_item["id"], "section": "main"},
+    )
+    updated_search = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"query": "swa"},
+    )
+    oracle_search = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"oracle_id": ORACLE_ID},
+    )
+    russian_search = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"query": "\u0431\u043e\u043b"},
+    )
+    deck_items = workspace_client.get(f"/api/workspace/decks/{deck['id']}/items")
+    decremented = workspace_client.patch(
+        f"/api/workspace/decks/{deck['id']}/items/{added.json()['id']}",
+        json={"quantity": 1},
+    )
+    side_item = workspace_client.post(
+        f"/api/workspace/decks/{deck['id']}/items",
+        json={"collection_item_id": created_item["id"], "section": "side"},
+    )
+    moved = workspace_client.patch(
+        f"/api/workspace/decks/{deck['id']}/items/{decremented.json()['id']}",
+        json={"section": "side"},
+    )
+    after_move = workspace_client.get(f"/api/workspace/decks/{deck['id']}/items")
+    deleted = workspace_client.delete(
+        f"/api/workspace/decks/{deck['id']}/items/{moved.json()['id']}",
+    )
+    after_delete_search = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"oracle_id": ORACLE_ID},
+    )
+
+    assert initial_search.status_code == 200
+    assert initial_search.json()[0]["total_owned"] == 2
+    assert initial_search.json()[0]["total_available"] == 2
+    assert len(initial_search.json()[0]["items"]) == 1
+    assert initial_search.json()[0]["items"][0]["collection_name"] == "My collection"
+    assert initial_search.json()[0]["items"][0]["release_date"] == 1780099200
+    assert added.status_code == 201
+    assert added.json()["name"] == "Swamp"
+    assert added.json()["oracle_id"] == ORACLE_ID
+    assert incremented.status_code == 201
+    assert incremented.json()["id"] == added.json()["id"]
+    assert incremented.json()["quantity"] == 2
+    assert overflow.status_code == 400
+    assert overflow.json()["detail"] == "Not enough available copies in collection"
+    assert updated_search.json()[0]["total_owned"] == 2
+    assert updated_search.json()[0]["total_available"] == 0
+    assert updated_search.json()[0]["items"][0]["allocations"] == [
+        {"deck_id": deck["id"], "deck_name": "Physical deck", "section": "main", "quantity": 2}
+    ]
+    assert oracle_search.status_code == 200
+    assert oracle_search.json()[0]["oracle_id"] == ORACLE_ID
+    assert oracle_search.json()[0]["total_owned"] == 2
+    assert oracle_search.json()[0]["total_available"] == 0
+    assert russian_search.status_code == 200
+    assert russian_search.json()[0]["name"] == "\u0411\u043e\u043b\u043e\u0442\u043e"
+    assert russian_search.json()[0]["items"][0]["name"] == "\u0411\u043e\u043b\u043e\u0442\u043e"
+    assert deck_items.json() == [
+        {
+            "id": added.json()["id"],
+            "collection_item_id": created_item["id"],
+            "printing_id": 1,
+            "release_date": 1780099200,
+            "language_code": "en",
+            "collection_id": 1,
+            "collection_name": "My collection",
+            "set_code": "TST",
+            "keyrune_code": "tst",
+            "collector_number": "1",
+            "language": "English",
+            "finish_id": 0,
+            "finish": "nonfoil",
+            "condition_code": "NM",
+            "owned_quantity": 2,
+            "allocated_quantity": 2,
+            "available_quantity": 0,
+            "section": "main",
+            "quantity": 2,
+            "name": "Swamp",
+            "oracle_id": ORACLE_ID,
+        }
+    ]
+    assert decremented.status_code == 200
+    assert decremented.json()["quantity"] == 1
+    assert side_item.status_code == 201
+    assert side_item.json()["section"] == "side"
+    assert side_item.json()["quantity"] == 1
+    assert moved.status_code == 200
+    assert moved.json()["id"] == side_item.json()["id"]
+    assert moved.json()["section"] == "side"
+    assert moved.json()["quantity"] == 2
+    assert [item["section"] for item in after_move.json()] == ["side"]
+    assert deleted.status_code == 204
+    assert after_delete_search.status_code == 200
+    assert after_delete_search.json()[0]["total_available"] == 2
+
+
+def test_workspace_wish_decks_reject_physical_inventory_actions(
+    workspace_client: TestClient,
+) -> None:
+    created_item = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 1},
+    ).json()
+    deck = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Wish deck", "player_id": 1, "is_wish": True},
+    ).json()
+
+    search = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"query": "swa"},
+    )
+    add = workspace_client.post(
+        f"/api/workspace/decks/{deck['id']}/items",
+        json={"collection_item_id": created_item["id"], "section": "main"},
+    )
+
+    assert search.status_code == 400
+    assert search.json()["detail"] == "Wish deck items are not implemented yet"
+    assert add.status_code == 400
+    assert add.json()["detail"] == "Wish deck items are not implemented yet"
+
+
+def test_workspace_physical_deck_item_partial_move(
+    workspace_client: TestClient,
+) -> None:
+    created_item = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 3},
+    ).json()
+    deck = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Physical deck", "player_id": 1},
+    ).json()
+    main_item = workspace_client.post(
+        f"/api/workspace/decks/{deck['id']}/items",
+        json={"collection_item_id": created_item["id"], "section": "main", "quantity": 2},
+    ).json()
+
+    moved_one = workspace_client.patch(
+        f"/api/workspace/decks/{deck['id']}/items/{main_item['id']}",
+        json={"section": "side", "quantity": 1},
+    )
+    deck_items = workspace_client.get(f"/api/workspace/decks/{deck['id']}/items")
+
+    assert moved_one.status_code == 200
+    assert moved_one.json()["section"] == "side"
+    assert moved_one.json()["quantity"] == 1
+    assert sorted(
+        (item["section"], item["quantity"])
+        for item in deck_items.json()
+    ) == [("main", 1), ("side", 1)]
+
+
 def test_workspace_player_settings_crud(workspace_client: TestClient) -> None:
     created = workspace_client.post(
         "/api/workspace/players",
@@ -804,3 +998,46 @@ def test_workspace_symbol_manifest_and_svg_are_available(
     assert svg.status_code == 200
     assert svg.headers["content-type"] == "image/svg+xml"
     assert svg.text == "<svg>white</svg>"
+
+
+def test_workspace_printing_image_uses_oracle_cache_after_scryfall_failure(
+    workspace_client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cached_image = tmp_path / "cached.jpg"
+    cached_image.write_bytes(b"cached oracle image")
+    calls: list[str] = []
+
+    def get_cached_card_image(*, scryfall_id: str, version: str, face_order: int = 0):
+        calls.append(f"cache:{scryfall_id}:{version}:{face_order}")
+        if scryfall_id == SCRYFALL_ID:
+            return None
+        return cached_image, "image/jpeg"
+
+    monkeypatch.setattr(scryfall, "get_cached_card_image", get_cached_card_image)
+    monkeypatch.setattr(
+        scryfall,
+        "get_card_json_for_image",
+        lambda *args: (_ for _ in ()).throw(URLError("offline")),
+    )
+    monkeypatch.setattr(
+        catalog,
+        "list_printings",
+        lambda oracle_id: [
+            {
+                "scryfall_id": "60000000-0000-0000-0000-000000000001",
+                "language_code": "en",
+                "release_date": 1780099200,
+            }
+        ],
+    )
+
+    response = workspace_client.get("/api/workspace/printings/1/images/normal?language_code=en")
+
+    assert response.status_code == 200
+    assert response.content == b"cached oracle image"
+    assert calls == [
+        f"cache:{SCRYFALL_ID}:normal:0",
+        "cache:60000000-0000-0000-0000-000000000001:normal:0",
+    ]

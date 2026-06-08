@@ -1,4 +1,9 @@
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
+
+
+DeckSection = Literal["main", "side", "maybe", "commander"]
 
 
 class WorkspacePlayerRead(BaseModel):
@@ -81,10 +86,74 @@ class WorkspaceDeckUpdate(BaseModel):
 
 class WorkspaceDeckItemRead(BaseModel):
     id: int
+    collection_item_id: int | None = None
+    printing_id: int | None = None
+    release_date: int | None = None
+    language_code: str | None = None
+    collection_id: int | None = None
+    collection_name: str | None = None
+    set_code: str | None = None
+    keyrune_code: str | None = None
+    collector_number: str | None = None
+    language: str | None = None
+    finish_id: int | None = None
+    finish: str | None = None
+    condition_code: str | None = None
+    owned_quantity: int | None = None
+    allocated_quantity: int | None = None
+    available_quantity: int | None = None
     section: str
     quantity: int
     name: str
     oracle_id: str
+
+
+class WorkspaceDeckItemCreate(BaseModel):
+    collection_item_id: int
+    section: DeckSection = "main"
+    quantity: int = Field(default=1, ge=1)
+
+
+class WorkspaceDeckItemUpdate(BaseModel):
+    section: DeckSection | None = None
+    quantity: int | None = Field(default=None, ge=1)
+
+
+class WorkspaceDeckItemAllocationRead(BaseModel):
+    deck_id: int
+    deck_name: str
+    section: str
+    quantity: int
+
+
+class WorkspaceDeckInventoryItemRead(BaseModel):
+    collection_item_id: int
+    collection_id: int
+    collection_name: str
+    printing_id: int
+    release_date: int
+    name: str
+    set_code: str
+    keyrune_code: str
+    collector_number: str
+    language_code: str
+    language: str
+    finish_id: int
+    finish: str
+    condition_code: str
+    owned_quantity: int
+    allocated_quantity: int
+    available_quantity: int
+    allocations: list[WorkspaceDeckItemAllocationRead]
+
+
+class WorkspaceDeckInventorySearchResultRead(BaseModel):
+    oracle_id: str
+    name: str
+    language_code: str
+    total_owned: int
+    total_available: int
+    items: list[WorkspaceDeckInventoryItemRead]
 
 
 class CardSuggestionRead(BaseModel):
