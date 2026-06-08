@@ -153,7 +153,13 @@ def get_printing(printing_id: int) -> dict | None:
                 p.id, p.scryfall_id, p.oracle_id, p.set_code, p.collector_number,
                 p.language_code, p.name, f.mana_cost, f.type
             from card_printings as p
-            join card_printing_faces as f on f.printing_id = p.id and f.face_order = 0
+            join card_printing_faces as f
+                on f.printing_id = p.id
+                and f.face_order = (
+                    select min(face_order)
+                    from card_printing_faces
+                    where printing_id = p.id
+                )
             where p.id = ?
             """,
             (printing_id,),
@@ -176,7 +182,13 @@ def get_printing_by_scryfall_id(scryfall_id: bytes) -> dict | None:
                 p.language_code, p.name, p.rarity, f.mana_cost, f.type,
                 l.name as language, s.keyrune_code, s.release_date
             from card_printings as p
-            join card_printing_faces as f on f.printing_id = p.id and f.face_order = 0
+            join card_printing_faces as f
+                on f.printing_id = p.id
+                and f.face_order = (
+                    select min(face_order)
+                    from card_printing_faces
+                    where printing_id = p.id
+                )
             join languages as l on l.code = p.language_code
             join sets as s on s.code = p.set_code
             where p.scryfall_id = ?
@@ -204,7 +216,13 @@ def get_printings_by_scryfall_ids(scryfall_ids: list[bytes]) -> dict[bytes, dict
                 p.language_code, p.name, p.rarity, f.mana_cost, f.type,
                 l.name as language, s.keyrune_code, s.release_date
             from card_printings as p
-            join card_printing_faces as f on f.printing_id = p.id and f.face_order = 0
+            join card_printing_faces as f
+                on f.printing_id = p.id
+                and f.face_order = (
+                    select min(face_order)
+                    from card_printing_faces
+                    where printing_id = p.id
+                )
             join languages as l on l.code = p.language_code
             join sets as s on s.code = p.set_code
             where p.scryfall_id in ({placeholders})
@@ -219,6 +237,44 @@ def get_printings_by_scryfall_ids(scryfall_ids: list[bytes]) -> dict[bytes, dict
         }
         for row in rows
     }
+
+
+def get_localized_printing_faces_many(
+    requests: list[tuple[int, str]],
+) -> dict[tuple[int, str], list[dict]]:
+    if not requests:
+        return {}
+    unique_requests = list(dict.fromkeys(requests))
+    with catalog_connection() as catalog:
+        catalog.execute(
+            "create temporary table requested_faces (printing_id integer, language_code text)"
+        )
+        catalog.executemany("insert into requested_faces values (?, ?)", unique_requests)
+        rows = catalog.execute(
+            """
+            select
+                r.printing_id,
+                r.language_code,
+                f.face_order,
+                coalesce(l.face_name, l.name, f.face_name, p.name) as name,
+                coalesce(l.type, f.type) as type_line,
+                coalesce(l.text, f.text) as oracle_text,
+                l.flavor_text,
+                f.mana_cost
+            from requested_faces as r
+            join card_printings as p on p.id = r.printing_id
+            join card_printing_faces as f on f.printing_id = p.id
+            left join card_face_localizations as l
+                on l.face_id = f.id and l.language_code = coalesce(r.language_code, p.language_code)
+            order by r.printing_id, r.language_code, f.face_order
+            """
+        ).fetchall()
+    faces_by_request: dict[tuple[int, str], list[dict]] = {}
+    for row in rows:
+        face = dict(row)
+        key = (face.pop("printing_id"), face.pop("language_code"))
+        faces_by_request.setdefault(key, []).append(face)
+    return faces_by_request
 
 
 def get_localized_printing_faces(printing_id: int, language_code: str | None = None) -> list[dict]:
@@ -242,6 +298,18 @@ def get_localized_printing_faces(printing_id: int, language_code: str | None = N
             (language_code, printing_id),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def finish_names(finish_ids: list[int]) -> dict[int, str]:
+    if not finish_ids:
+        return {}
+    placeholders = ",".join("?" for _ in finish_ids)
+    with catalog_connection() as catalog:
+        rows = catalog.execute(
+            f"select id, name from finishes where id in ({placeholders})",
+            finish_ids,
+        ).fetchall()
+    return {row["id"]: row["name"] for row in rows}
 
 
 def printing_supports_finish(printing_id: int, finish_id: int) -> bool:
@@ -290,6 +358,18 @@ def language_name(language_code: str) -> str | None:
             (language_code,),
         ).fetchone()
     return row["name"] if row is not None else None
+
+
+def language_names(language_codes: list[str]) -> dict[str, str]:
+    if not language_codes:
+        return {}
+    placeholders = ",".join("?" for _ in language_codes)
+    with catalog_connection() as catalog:
+        rows = catalog.execute(
+            f"select code, name from languages where code in ({placeholders})",
+            language_codes,
+        ).fetchall()
+    return {row["code"]: row["name"] for row in rows}
 
 
 def finish_name(finish_id: int) -> str | None:

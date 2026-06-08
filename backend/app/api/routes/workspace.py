@@ -150,6 +150,60 @@ def _item_read(item: CollectionItem) -> WorkspaceCollectionItemRead:
     )
 
 
+def _items_read(items: list[CollectionItem]) -> list[WorkspaceCollectionItemRead]:
+    if not items:
+        return []
+    try:
+        printings = catalog.get_printings_by_scryfall_ids(
+            list(dict.fromkeys(item.scryfall_id for item in items))
+        )
+        finishes = catalog.finish_names(list({item.finish_id for item in items}))
+        languages = catalog.language_names(list({item.language_code for item in items}))
+        face_requests = [
+            (printing["id"], item.language_code)
+            for item in items
+            if (printing := printings.get(item.scryfall_id)) is not None
+        ]
+        faces_by_request = catalog.get_localized_printing_faces_many(face_requests)
+    except FileNotFoundError as error:
+        raise _catalog_error(error) from error
+
+    reads: list[WorkspaceCollectionItemRead] = []
+    for item in items:
+        printing = printings.get(item.scryfall_id)
+        finish = finishes.get(item.finish_id)
+        language = languages.get(item.language_code)
+        faces = faces_by_request.get((printing["id"], item.language_code), []) if printing else []
+        if printing is None or finish is None or language is None or not faces:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Collection item no longer resolves to the installed catalog",
+            )
+        reads.append(
+            WorkspaceCollectionItemRead(
+                id=item.id,
+                printing_id=printing["id"],
+                collection_id=item.collection_id,
+                scryfall_id=printing["scryfall_id"],
+                oracle_id=printing["oracle_id"],
+                name=faces[0]["name"],
+                set_code=printing["set_code"],
+                keyrune_code=printing["keyrune_code"],
+                rarity=printing["rarity"],
+                collector_number=printing["collector_number"],
+                language_code=item.language_code,
+                language=language,
+                finish_id=item.finish_id,
+                finish=finish,
+                condition_code=item.condition_code,
+                quantity=item.quantity,
+                mana_cost=printing["mana_cost"],
+                type=faces[0]["type_line"],
+            )
+        )
+    return reads
+
+
 def _validated_item_identity(
     payload: WorkspaceCollectionItemCreate,
 ) -> tuple[bytes, str]:
@@ -1218,7 +1272,7 @@ def list_collection_items(
         .where(CollectionItem.collection_id == collection_id)
         .order_by(CollectionItem.created_at.desc(), CollectionItem.id.desc())
     )
-    return [_item_read(item) for item in items]
+    return _items_read(list(items))
 
 
 @router.post(

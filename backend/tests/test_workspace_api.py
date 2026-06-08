@@ -18,6 +18,8 @@ from app.services import catalog, scryfall
 
 SCRYFALL_ID = "40000000-0000-0000-0000-000000000001"
 ORACLE_ID = "50000000-0000-0000-0000-000000000001"
+BACK_HALF_SCRYFALL_ID = "40000000-0000-0000-0000-000000000006"
+BACK_HALF_ORACLE_ID = "50000000-0000-0000-0000-000000000006"
 
 
 def _create_catalog(path: Path) -> None:
@@ -116,6 +118,23 @@ def _create_catalog(path: Path) -> None:
         )
         """,
         (UUID(ORACLE_ID).bytes,),
+    )
+    db.execute(
+        """
+        insert into card_printings values (
+            6, ?, ?, 'TST', '6b', 'en', 'Back Half Creature', 'rare', 'meld'
+        )
+        """,
+        (UUID(BACK_HALF_SCRYFALL_ID).bytes, UUID(BACK_HALF_ORACLE_ID).bytes),
+    )
+    db.execute("insert into card_printing_finishes values (6, 0)")
+    db.execute(
+        """
+        insert into card_printing_faces values (
+            6, 6, 1, null, 'Back Half Creature', '', 0, 'Legendary Creature',
+            '', '', '', '', null, null, null, null
+        )
+        """
     )
     db.commit()
     db.close()
@@ -688,6 +707,26 @@ def test_workspace_add_uses_selected_localization(workspace_client: TestClient) 
     assert response.json()["language_code"] == "ru"
     assert response.json()["language"] == "Russian"
     assert response.json()["name"] == "\u0411\u043e\u043b\u043e\u0442\u043e"
+
+
+def test_workspace_add_resolves_printing_without_face_order_zero(
+    workspace_client: TestClient,
+) -> None:
+    response = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={
+            "printing_id": 6,
+            "finish_id": 0,
+            "language_code": "en",
+            "condition_code": "NM",
+            "quantity": 1,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["scryfall_id"] == BACK_HALF_SCRYFALL_ID
+    assert response.json()["name"] == "Back Half Creature"
+    assert response.json()["type"] == "Legendary Creature"
 
 
 def test_workspace_add_rejects_unavailable_localization(workspace_client: TestClient) -> None:
