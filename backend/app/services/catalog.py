@@ -1,3 +1,4 @@
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -30,16 +31,30 @@ def _uuid_text(value: bytes) -> str:
 
 
 def search_card_names(query: str, *, exact: bool, limit: int = 15) -> list[dict]:
+    return search_cards(query, field="name", exact=exact, limit=limit)
+
+
+def search_cards(
+    query: str,
+    *,
+    field: str = "name",
+    exact: bool = False,
+    limit: int = 15,
+) -> list[dict]:
     normalized_query = query.casefold()
+    if field not in {"name", "type", "text"}:
+        raise ValueError("Unsupported search field")
     with catalog_connection() as catalog:
         columns = {
             row["name"]
             for row in catalog.execute("pragma table_info(card_search_index)")
         }
-        normalized_name = (
+        normalized_field = (
             "normalized_name"
-            if "normalized_name" in columns
+            if field == "name" and "normalized_name" in columns
             else "unicode_casefold(name)"
+            if field == "name"
+            else f"unicode_casefold({field})"
         )
         select_sql = """
             select
@@ -56,19 +71,24 @@ def search_card_names(query: str, *, exact: bool, limit: int = 15) -> list[dict]
         """
         if exact:
             rows = catalog.execute(
-                select_sql.format(match=f"{normalized_name} = ?"),
+                select_sql.format(match=f"{normalized_field} = ?"),
                 (normalized_query, limit),
             ).fetchall()
-        else:
+        elif field == "name":
             rows = catalog.execute(
-                select_sql.format(match=f"{normalized_name} >= ? and {normalized_name} < ?"),
+                select_sql.format(match=f"{normalized_field} >= ? and {normalized_field} < ?"),
                 (normalized_query, f"{normalized_query}\U0010ffff", limit),
             ).fetchall()
             if not rows:
                 rows = catalog.execute(
-                    select_sql.format(match=f"{normalized_name} like ?"),
+                    select_sql.format(match=f"{normalized_field} like ?"),
                     (f"%{normalized_query}%", limit),
                 ).fetchall()
+        else:
+            rows = catalog.execute(
+                select_sql.format(match=f"{normalized_field} like ?"),
+                (f"%{normalized_query}%", limit),
+            ).fetchall()
         languages = {
             row["code"]: row["name"]
             for row in catalog.execute("select code, name from languages")
@@ -83,6 +103,78 @@ def search_card_names(query: str, *, exact: bool, limit: int = 15) -> list[dict]
         }
         for row in rows
     ]
+
+
+def oracle_ids_matching_deck_filters(
+    *,
+    colors: list[str],
+    color_match: str,
+    has_uncolored_mana: bool,
+    has_colorless_mana: bool,
+    has_generic_mana: bool,
+    no_colors: bool,
+) -> set[str]:
+    selected_colors = {color.upper() for color in colors if color.upper() in {"W", "U", "B", "R", "G"}}
+    if not (selected_colors or has_uncolored_mana or has_colorless_mana or has_generic_mana or no_colors):
+        return set()
+
+    with catalog_connection() as catalog:
+        rows = catalog.execute(
+            """
+            select
+                p.oracle_id,
+                group_concat(distinct f.color_identity) as color_identities,
+                group_concat(f.mana_cost, '') as mana_cost
+            from card_printings as p
+            join card_printing_faces as f on f.printing_id = p.id
+            group by p.oracle_id
+            """
+        ).fetchall()
+
+    matching_ids: set[str] = set()
+    generic_mana_pattern = re.compile(r"\{(?:\d+|X)\}", re.IGNORECASE)
+    for row in rows:
+        identity = {
+            color
+            for color in (row["color_identities"] or "")
+            if color in {"W", "U", "B", "R", "G"}
+        }
+        mana_cost = row["mana_cost"] or ""
+
+        if no_colors and identity:
+            continue
+        has_colorless_symbol = "{C}" in mana_cost
+        has_generic_symbol = generic_mana_pattern.search(mana_cost) is not None
+        has_requested_mana_symbol = bool(
+            (has_uncolored_mana and (has_colorless_symbol or has_generic_symbol))
+            or (has_colorless_mana and has_colorless_symbol)
+            or (has_generic_mana and has_generic_symbol)
+        )
+        needs_requested_mana_symbol = has_uncolored_mana or has_colorless_mana or has_generic_mana
+
+        if selected_colors:
+            if color_match == "includes_any":
+                color_matches = bool(identity & selected_colors) or has_requested_mana_symbol
+            elif color_match == "exactly":
+                color_matches = identity == selected_colors and (
+                    has_requested_mana_symbol if needs_requested_mana_symbol else True
+                )
+            else:
+                color_matches = selected_colors <= identity and (
+                    has_requested_mana_symbol if needs_requested_mana_symbol else True
+                )
+            if not color_matches:
+                continue
+        elif needs_requested_mana_symbol:
+            if color_match == "exactly":
+                color_matches = not identity and has_requested_mana_symbol
+            else:
+                color_matches = has_requested_mana_symbol
+            if not color_matches:
+                continue
+
+        matching_ids.add(_uuid_text(row["oracle_id"]))
+    return matching_ids
 
 
 def list_printings(oracle_id: str) -> list[dict]:
@@ -207,28 +299,33 @@ def get_printing_by_scryfall_id(scryfall_id: bytes) -> dict | None:
 def get_printings_by_scryfall_ids(scryfall_ids: list[bytes]) -> dict[bytes, dict]:
     if not scryfall_ids:
         return {}
-    placeholders = ",".join("?" for _ in scryfall_ids)
+    rows: list[sqlite3.Row] = []
     with catalog_connection() as catalog:
-        rows = catalog.execute(
-            f"""
-            select
-                p.id, p.scryfall_id, p.oracle_id, p.set_code, p.collector_number,
-                p.language_code, p.name, p.rarity, f.mana_cost, f.type,
-                l.name as language, s.keyrune_code, s.release_date
-            from card_printings as p
-            join card_printing_faces as f
-                on f.printing_id = p.id
-                and f.face_order = (
-                    select min(face_order)
-                    from card_printing_faces
-                    where printing_id = p.id
-                )
-            join languages as l on l.code = p.language_code
-            join sets as s on s.code = p.set_code
-            where p.scryfall_id in ({placeholders})
-            """,
-            scryfall_ids,
-        ).fetchall()
+        for offset in range(0, len(scryfall_ids), 500):
+            chunk = scryfall_ids[offset : offset + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows.extend(
+                catalog.execute(
+                    f"""
+                    select
+                        p.id, p.scryfall_id, p.oracle_id, p.set_code, p.collector_number,
+                        p.language_code, p.name, p.rarity, f.mana_cost, f.mana_value, f.type,
+                        l.name as language, s.keyrune_code, s.release_date
+                    from card_printings as p
+                    join card_printing_faces as f
+                        on f.printing_id = p.id
+                        and f.face_order = (
+                            select min(face_order)
+                            from card_printing_faces
+                            where printing_id = p.id
+                        )
+                    join languages as l on l.code = p.language_code
+                    join sets as s on s.code = p.set_code
+                    where p.scryfall_id in ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall()
+            )
     return {
         row["scryfall_id"]: {
             **dict(row),
@@ -237,6 +334,28 @@ def get_printings_by_scryfall_ids(scryfall_ids: list[bytes]) -> dict[bytes, dict
         }
         for row in rows
     }
+
+
+def scryfall_ids_for_oracle_ids(oracle_ids: set[str]) -> set[bytes]:
+    if not oracle_ids:
+        return set()
+    oracle_id_bytes = [UUID(oracle_id).bytes for oracle_id in oracle_ids]
+    rows: list[sqlite3.Row] = []
+    with catalog_connection() as catalog:
+        for offset in range(0, len(oracle_id_bytes), 500):
+            chunk = oracle_id_bytes[offset : offset + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            rows.extend(
+                catalog.execute(
+                    f"""
+                    select scryfall_id
+                    from card_printings
+                    where oracle_id in ({placeholders})
+                    """,
+                    chunk,
+                ).fetchall()
+            )
+    return {row["scryfall_id"] for row in rows}
 
 
 def get_localized_printing_faces_many(

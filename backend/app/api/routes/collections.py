@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
@@ -313,17 +313,31 @@ def delete_collection(collection_id: int, db: Session = Depends(get_db)) -> None
 @router.get("/{collection_id}/items", response_model=list[CollectionItemRead])
 def list_collection_items(
     collection_id: int,
+    response: Response,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_db),
 ) -> list[CollectionItem]:
     if db.get(Collection, collection_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
+    total_items = db.scalar(
+        select(func.count()).select_from(CollectionItem).where(CollectionItem.collection_id == collection_id)
+    )
+    total_cards = db.scalar(
+        select(func.coalesce(func.sum(CollectionItem.quantity), 0)).where(
+            CollectionItem.collection_id == collection_id
+        )
+    )
+    response.headers["X-Total-Count"] = str(total_items or 0)
+    response.headers["X-Total-Cards"] = str(total_cards or 0)
 
     statement = (
         select(CollectionItem)
         .options(selectinload(CollectionItem.card), selectinload(CollectionItem.deck_items))
         .where(CollectionItem.collection_id == collection_id)
-        .order_by(CollectionItem.created_at.desc())
-        .limit(100)
+        .order_by(CollectionItem.created_at.desc(), CollectionItem.id.desc())
+        .offset(offset)
+        .limit(limit)
     )
     return list(db.scalars(statement))
 

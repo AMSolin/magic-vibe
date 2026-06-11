@@ -14,7 +14,7 @@ import {
   deleteCollection,
   deleteCollectionItem,
   getApiErrorMessage,
-  listCollectionItems,
+  listCollectionItemsPage,
   listCollections,
   moveCollectionItem,
   updateCollection,
@@ -37,6 +37,10 @@ export const useCollectionStore = defineStore('collection', () => {
   const collections = ref<Collection[]>([]);
   const selectedCollectionId = ref<number | null>(readStoredCollectionId());
   const items = ref<CollectionItem[]>([]);
+  const itemPageFirst = ref(0);
+  const itemPageRows = ref(100);
+  const totalItems = ref(0);
+  const totalCards = ref(0);
   const collectionsLoading = ref(false);
   const savingCollection = ref(false);
   const loading = ref(false);
@@ -47,10 +51,11 @@ export const useCollectionStore = defineStore('collection', () => {
     () =>
       collections.value.find((collection) => collection.id === selectedCollectionId.value) ?? null,
   );
-  const totalCards = computed(() => items.value.reduce((sum, item) => sum + item.quantity, 0));
-
   watch(selectedCollectionId, (collectionId) => {
     items.value = [];
+    itemPageFirst.value = 0;
+    totalItems.value = 0;
+    totalCards.value = 0;
     if (collectionId === null) {
       window.localStorage.removeItem(SELECTED_COLLECTION_STORAGE_KEY);
     } else {
@@ -156,20 +161,35 @@ export const useCollectionStore = defineStore('collection', () => {
     }
   }
 
-  async function fetchCollectionItems(): Promise<void> {
+  async function fetchCollectionItems(options?: { first?: number; rows?: number }): Promise<void> {
     if (selectedCollectionId.value === null) {
       await fetchCollections();
     }
 
     if (selectedCollectionId.value === null) {
       items.value = [];
+      totalItems.value = 0;
+      totalCards.value = 0;
       return;
+    }
+
+    if (options?.first !== undefined) {
+      itemPageFirst.value = options.first;
+    }
+    if (options?.rows !== undefined) {
+      itemPageRows.value = options.rows;
     }
 
     loading.value = true;
     error.value = null;
     try {
-      items.value = await listCollectionItems(selectedCollectionId.value);
+      const page = await listCollectionItemsPage(selectedCollectionId.value, {
+        offset: itemPageFirst.value,
+        limit: itemPageRows.value,
+      });
+      items.value = page.items;
+      totalItems.value = page.total_count;
+      totalCards.value = page.total_cards;
     } catch (caughtError) {
       error.value = getApiErrorMessage(caughtError, 'Collection is unavailable');
     } finally {
@@ -192,8 +212,12 @@ export const useCollectionStore = defineStore('collection', () => {
     try {
       const item = await addCollectionItem(selectedCollectionId.value, { quantity: 1, ...payload });
       const existingIndex = items.value.findIndex((existingItem) => existingItem.id === item.id);
+      totalCards.value += payload.quantity ?? 1;
       if (existingIndex === -1) {
-        items.value = [item, ...items.value];
+        totalItems.value += 1;
+        if (itemPageFirst.value === 0) {
+          items.value = [item, ...items.value].slice(0, itemPageRows.value);
+        }
       } else {
         items.value.splice(existingIndex, 1, item);
       }
@@ -214,10 +238,14 @@ export const useCollectionStore = defineStore('collection', () => {
     error.value = null;
 
     try {
+      const previousItem = previousItems.find((existingItem) => existingItem.id === itemId);
       const item = await updateCollectionItem(selectedCollectionId.value, itemId, payload);
       const itemIndex = items.value.findIndex((existingItem) => existingItem.id === item.id);
       if (itemIndex !== -1) {
         items.value.splice(itemIndex, 1, item);
+      }
+      if (previousItem) {
+        totalCards.value += item.quantity - previousItem.quantity;
       }
     } catch (caughtError) {
       items.value = previousItems;
@@ -232,13 +260,25 @@ export const useCollectionStore = defineStore('collection', () => {
     }
 
     const previousItems = items.value;
+    const removedItem = previousItems.find((item) => item.id === itemId);
     items.value = items.value.filter((item) => item.id !== itemId);
+    if (removedItem) {
+      totalItems.value = Math.max(0, totalItems.value - 1);
+      totalCards.value = Math.max(0, totalCards.value - removedItem.quantity);
+    }
     error.value = null;
 
     try {
       await deleteCollectionItem(selectedCollectionId.value, itemId);
+      if (selectedCollectionId.value !== null && items.value.length < itemPageRows.value) {
+        await fetchCollectionItems();
+      }
     } catch (caughtError) {
       items.value = previousItems;
+      if (removedItem) {
+        totalItems.value += 1;
+        totalCards.value += removedItem.quantity;
+      }
       error.value = getApiErrorMessage(caughtError, 'Could not remove card');
     }
   }
@@ -252,7 +292,15 @@ export const useCollectionStore = defineStore('collection', () => {
     error.value = null;
     try {
       await moveCollectionItem(selectedCollectionId.value, itemId, payload);
+      const movedItem = items.value.find((item) => item.id === itemId);
       items.value = items.value.filter((item) => item.id !== itemId);
+      if (movedItem) {
+        totalItems.value = Math.max(0, totalItems.value - 1);
+        totalCards.value = Math.max(0, totalCards.value - movedItem.quantity);
+      }
+      if (items.value.length < itemPageRows.value) {
+        await fetchCollectionItems();
+      }
       return true;
     } catch (caughtError) {
       error.value = getApiErrorMessage(caughtError, 'Could not move card');
@@ -265,6 +313,9 @@ export const useCollectionStore = defineStore('collection', () => {
     selectedCollectionId,
     selectedCollection,
     items,
+    itemPageFirst,
+    itemPageRows,
+    totalItems,
     collectionsLoading,
     savingCollection,
     loading,

@@ -18,6 +18,14 @@ from app.services import catalog, scryfall
 
 SCRYFALL_ID = "40000000-0000-0000-0000-000000000001"
 ORACLE_ID = "50000000-0000-0000-0000-000000000001"
+GW_SCRYFALL_ID = "40000000-0000-0000-0000-000000000002"
+GW_ORACLE_ID = "50000000-0000-0000-0000-000000000002"
+WU_SCRYFALL_ID = "40000000-0000-0000-0000-000000000003"
+WU_ORACLE_ID = "50000000-0000-0000-0000-000000000003"
+ARTIFACT_SCRYFALL_ID = "40000000-0000-0000-0000-000000000004"
+ARTIFACT_ORACLE_ID = "50000000-0000-0000-0000-000000000004"
+COLORLESS_SCRYFALL_ID = "40000000-0000-0000-0000-000000000005"
+COLORLESS_ORACLE_ID = "50000000-0000-0000-0000-000000000005"
 BACK_HALF_SCRYFALL_ID = "40000000-0000-0000-0000-000000000006"
 BACK_HALF_ORACLE_ID = "50000000-0000-0000-0000-000000000006"
 
@@ -119,6 +127,66 @@ def _create_catalog(path: Path) -> None:
         """,
         (UUID(ORACLE_ID).bytes,),
     )
+    extra_cards = [
+        (2, GW_SCRYFALL_ID, GW_ORACLE_ID, "Garden Charm", "{1}{G}{W}", 3, "Instant", "GW", "GW"),
+        (3, WU_SCRYFALL_ID, WU_ORACLE_ID, "Cloud Charm", "{W}{U}", 2, "Instant", "WU", "WU"),
+        (4, ARTIFACT_SCRYFALL_ID, ARTIFACT_ORACLE_ID, "Brass Compass", "{3}", 3, "Artifact", "", ""),
+        (
+            5,
+            COLORLESS_SCRYFALL_ID,
+            COLORLESS_ORACLE_ID,
+            "Wastes Engine",
+            "{C}",
+            1,
+            "Artifact Creature",
+            "",
+            "",
+        ),
+    ]
+    for (
+        printing_id,
+        scryfall_id,
+        oracle_id,
+        name,
+        mana_cost,
+        mana_value,
+        type_line,
+        colors,
+        color_identity,
+    ) in extra_cards:
+        db.execute(
+            """
+            insert into card_printings values (
+                ?, ?, ?, 'TST', ?, 'en', ?, 'rare', 'normal'
+            )
+            """,
+            (printing_id, UUID(scryfall_id).bytes, UUID(oracle_id).bytes, str(printing_id), name),
+        )
+        db.execute("insert into card_printing_finishes values (?, 0)", (printing_id,))
+        db.execute(
+            """
+            insert into card_printing_faces values (
+                ?, ?, 0, null, null, ?, ?, ?, '', ?, ?, '', null, null, null, null
+            )
+            """,
+            (printing_id, printing_id, mana_cost, mana_value, type_line, colors, color_identity),
+        )
+        db.execute(
+            """
+            insert into card_search_index values (
+                ?, ?, 0, 'en', ?, ?, '', ?, ?, ?, '', 1
+            )
+            """,
+            (
+                printing_id + 10,
+                UUID(oracle_id).bytes,
+                name,
+                type_line,
+                mana_value,
+                colors,
+                color_identity,
+            ),
+        )
     db.execute(
         """
         insert into card_printings values (
@@ -209,6 +277,15 @@ def test_workspace_search_and_printing_options(workspace_client: TestClient) -> 
     assert options_response.json()["printings"][0]["localizations"] == [
         {"code": "ru", "name": "Russian"}
     ]
+
+
+def test_catalog_printing_lookup_batches_large_inputs(workspace_client: TestClient) -> None:
+    _ = workspace_client
+
+    printings = catalog.get_printings_by_scryfall_ids([UUID(SCRYFALL_ID).bytes] * 1_001)
+
+    assert list(printings) == [UUID(SCRYFALL_ID).bytes]
+    assert printings[UUID(SCRYFALL_ID).bytes]["name"] == "Swamp"
 
 
 def test_workspace_collection_settings_crud(workspace_client: TestClient) -> None:
@@ -412,7 +489,7 @@ def test_workspace_physical_deck_inventory_search_and_add(
     assert oracle_search.json()[0]["total_available"] == 0
     assert russian_search.status_code == 200
     assert russian_search.json()[0]["name"] == "\u0411\u043e\u043b\u043e\u0442\u043e"
-    assert russian_search.json()[0]["items"][0]["name"] == "\u0411\u043e\u043b\u043e\u0442\u043e"
+    assert russian_search.json()[0]["items"][0]["name"] == "Swamp"
     assert deck_items.json() == [
         {
             "id": added.json()["id"],
@@ -451,6 +528,163 @@ def test_workspace_physical_deck_inventory_search_and_add(
     assert deleted.status_code == 204
     assert after_delete_search.status_code == 200
     assert after_delete_search.json()[0]["total_available"] == 2
+
+
+def test_workspace_physical_deck_inventory_search_is_paginated(
+    workspace_client: TestClient,
+) -> None:
+    for printing_id in range(2, 6):
+        created_item = workspace_client.post(
+            "/api/workspace/collections/1/items",
+            json={
+                "printing_id": printing_id,
+                "finish_id": 0,
+                "condition_code": "NM",
+                "quantity": 1,
+            },
+        )
+        assert created_item.status_code == 201
+    deck = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Physical deck", "player_id": 1},
+    ).json()
+
+    first_page = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params=[("rarities", "rare"), ("limit", "2")],
+    )
+    second_page = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params=[("rarities", "rare"), ("offset", "2"), ("limit", "2")],
+    )
+
+    assert first_page.status_code == 200
+    assert first_page.headers["X-Total-Count"] == "4"
+    assert first_page.headers["X-Total-Items"] == "4"
+    assert len(first_page.json()) == 2
+    assert second_page.status_code == 200
+    assert second_page.headers["X-Total-Count"] == "4"
+    assert second_page.headers["X-Total-Items"] == "4"
+    assert len(second_page.json()) == 2
+    assert {result["oracle_id"] for result in first_page.json()}.isdisjoint(
+        {result["oracle_id"] for result in second_page.json()}
+    )
+
+
+def test_workspace_physical_deck_inventory_color_filters(
+    workspace_client: TestClient,
+) -> None:
+    for printing_id in [1, 2, 3, 4, 5]:
+        workspace_client.post(
+            "/api/workspace/collections/1/items",
+            json={"printing_id": printing_id, "finish_id": 0, "condition_code": "NM", "quantity": 1},
+        )
+    deck = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Physical deck", "player_id": 1},
+    ).json()
+
+    includes_all = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params=[("colors", "W"), ("colors", "G"), ("color_match", "includes_all")],
+    )
+    includes_any = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params=[("colors", "W"), ("colors", "G"), ("color_match", "includes_any")],
+    )
+    exactly = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params=[("colors", "W"), ("colors", "G"), ("color_match", "exactly")],
+    )
+    uncolored_mana = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"has_uncolored_mana": "true"},
+    )
+    exact_uncolored_mana = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"has_uncolored_mana": "true", "color_match": "exactly"},
+    )
+    exact_gw_uncolored_mana = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params=[
+            ("colors", "W"),
+            ("colors", "G"),
+            ("has_uncolored_mana", "true"),
+            ("color_match", "exactly"),
+        ],
+    )
+    no_colors = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"no_colors": "true"},
+    )
+    common = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"rarities": "common"},
+    )
+    rare_generic = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"rarities": "rare", "has_uncolored_mana": "true"},
+    )
+    mana_value_range = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"mana_value_min": "2", "mana_value_max": "3"},
+    )
+    type_search = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"query": "artifact", "search_field": "type"},
+    )
+    text_search = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"query": "add", "search_field": "text"},
+    )
+    russian_upper_name_search = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"query": "\u0411\u041e\u041b", "search_field": "name"},
+    )
+    russian_upper_type_search = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"query": "\u0411\u0410\u0417\u041e\u0412\u0410\u042f", "search_field": "type"},
+    )
+    russian_upper_text_search = workspace_client.get(
+        f"/api/workspace/decks/{deck['id']}/items/search",
+        params={"query": "\u0414\u041e\u0411\u0410\u0412\u042c\u0422\u0415", "search_field": "text"},
+    )
+
+    assert includes_all.status_code == 200
+    assert [result["name"] for result in includes_all.json()] == ["Garden Charm"]
+    assert [result["name"] for result in includes_any.json()] == ["Cloud Charm", "Garden Charm"]
+    assert [result["name"] for result in exactly.json()] == ["Garden Charm"]
+    assert [result["name"] for result in uncolored_mana.json()] == [
+        "Brass Compass",
+        "Garden Charm",
+        "Wastes Engine",
+    ]
+    assert [result["name"] for result in exact_uncolored_mana.json()] == [
+        "Brass Compass",
+        "Wastes Engine",
+    ]
+    assert [result["name"] for result in exact_gw_uncolored_mana.json()] == ["Garden Charm"]
+    assert [result["name"] for result in no_colors.json()] == ["Brass Compass", "Wastes Engine"]
+    assert [result["name"] for result in common.json()] == ["Swamp"]
+    assert [result["name"] for result in rare_generic.json()] == [
+        "Brass Compass",
+        "Garden Charm",
+        "Wastes Engine",
+    ]
+    assert [result["name"] for result in mana_value_range.json()] == [
+        "Brass Compass",
+        "Cloud Charm",
+        "Garden Charm",
+    ]
+    assert [result["name"] for result in type_search.json()] == [
+        "Brass Compass",
+        "Wastes Engine",
+    ]
+    assert [result["name"] for result in text_search.json()] == ["Swamp"]
+    assert russian_upper_name_search.json()[0]["name"] == "\u0411\u043e\u043b\u043e\u0442\u043e"
+    assert russian_upper_name_search.json()[0]["items"][0]["name"] == "Swamp"
+    assert russian_upper_type_search.json()[0]["name"] == "\u0411\u043e\u043b\u043e\u0442\u043e"
+    assert russian_upper_text_search.json()[0]["name"] == "\u0411\u043e\u043b\u043e\u0442\u043e"
 
 
 def test_workspace_wish_decks_reject_physical_inventory_actions(

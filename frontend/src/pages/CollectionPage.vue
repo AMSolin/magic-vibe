@@ -26,6 +26,9 @@ const {
   loading,
   error,
   totalCards,
+  totalItems,
+  itemPageFirst,
+  itemPageRows,
 } = storeToRefs(collectionStore);
 const createDialogVisible = ref(false);
 const deleteDialogVisible = ref(false);
@@ -95,6 +98,10 @@ async function moveItem(itemId: number): Promise<void> {
   if (moved) {
     delete moveTargets.value[itemId];
   }
+}
+
+async function pageCollectionItems(event: { first: number; rows: number }): Promise<void> {
+  await collectionStore.fetchCollectionItems({ first: event.first, rows: event.rows });
 }
 
 onMounted(async () => {
@@ -196,7 +203,21 @@ watch(newCollectionIsWishlist, (isWishlist) => {
       </div>
     </section>
 
-    <DataTable :value="items" :loading="loading" data-key="id" striped-rows>
+    <DataTable
+      :value="items"
+      :loading="loading"
+      data-key="id"
+      striped-rows
+      paginator
+      lazy
+      :first="itemPageFirst"
+      :rows="itemPageRows"
+      :total-records="totalItems"
+      :rows-per-page-options="[50, 100, 250, 500]"
+      paginator-template="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown CurrentPageReport"
+      current-page-report-template="{first}-{last} of {totalRecords}"
+      @page="pageCollectionItems"
+    >
       <template #empty>
         <p class="empty-state">Collection is empty</p>
       </template>

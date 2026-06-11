@@ -70,6 +70,12 @@ export type CollectionItemMove = {
   collection_id: number;
 };
 
+export type CollectionItemsPage = {
+  items: CollectionItem[];
+  total_count: number;
+  total_cards: number;
+};
+
 export type Deck = {
   id: number;
   name: string;
@@ -261,6 +267,25 @@ export type WorkspaceDeckInventorySearchResult = {
   items: WorkspaceDeckInventoryItem[];
 };
 
+export type WorkspaceDeckInventorySearchPage = {
+  results: WorkspaceDeckInventorySearchResult[];
+  total_count: number;
+  total_items: number;
+};
+
+export type WorkspaceDeckInventorySearchFilters = {
+  search_field: 'name' | 'type' | 'text';
+  colors: string[];
+  rarities: string[];
+  mana_value_min: number | null;
+  mana_value_max: number | null;
+  color_match: 'includes_all' | 'includes_any' | 'exactly';
+  has_uncolored_mana: boolean;
+  has_colorless_mana: boolean;
+  has_generic_mana: boolean;
+  no_colors: boolean;
+};
+
 export type WorkspacePlayerWrite = {
   name: string;
   is_default: boolean;
@@ -446,6 +471,27 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function requestResponse(path: string, init?: RequestInit): Promise<Response> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    headers: { 'Content-Type': 'application/json', ...init?.headers },
+    ...init,
+  });
+
+  if (!response.ok) {
+    let detail: string | null = null;
+    try {
+      const body = (await response.json()) as ApiErrorBody;
+      detail = formatApiErrorDetail(body.detail);
+    } catch {
+      // Fall back to the HTTP status when the response body is not JSON.
+    }
+
+    throw new ApiError(detail ?? `API request failed: ${response.status}`, response.status);
+  }
+
+  return response;
+}
+
 export function searchCards(search: string): Promise<Card[]> {
   const query = new URLSearchParams();
   if (search.trim()) {
@@ -484,6 +530,23 @@ export function deleteCollection(collectionId: number): Promise<void> {
 
 export function listCollectionItems(collectionId: number): Promise<CollectionItem[]> {
   return request<CollectionItem[]>(`/api/collections/${collectionId}/items`);
+}
+
+export async function listCollectionItemsPage(
+  collectionId: number,
+  options: { offset: number; limit: number },
+): Promise<CollectionItemsPage> {
+  const params = new URLSearchParams({
+    offset: String(options.offset),
+    limit: String(options.limit),
+  });
+  const response = await requestResponse(`/api/collections/${collectionId}/items?${params.toString()}`);
+  const items = (await response.json()) as CollectionItem[];
+  return {
+    items,
+    total_count: Number(response.headers.get('X-Total-Count') ?? items.length),
+    total_cards: Number(response.headers.get('X-Total-Cards') ?? 0),
+  };
 }
 
 export function addCollectionItem(
@@ -670,13 +733,57 @@ export function searchWorkspaceDeckInventory(
   deckId: number,
   query: string,
   oracleId?: string,
-): Promise<WorkspaceDeckInventorySearchResult[]> {
+  filters?: WorkspaceDeckInventorySearchFilters,
+  page?: { offset: number; limit: number },
+): Promise<WorkspaceDeckInventorySearchPage> {
   const params = new URLSearchParams({ query });
+  if (page) {
+    params.set('offset', String(page.offset));
+    params.set('limit', String(page.limit));
+  }
   if (oracleId) {
     params.set('oracle_id', oracleId);
   }
-  return request<WorkspaceDeckInventorySearchResult[]>(
-    `/api/workspace/decks/${deckId}/items/search?${params.toString()}`,
+  if (filters) {
+    params.set('search_field', filters.search_field);
+    for (const color of filters.colors) {
+      params.append('colors', color);
+    }
+    for (const rarity of filters.rarities) {
+      params.append('rarities', rarity);
+    }
+    if (filters.mana_value_min !== null) {
+      params.set('mana_value_min', String(filters.mana_value_min));
+    }
+    if (filters.mana_value_max !== null) {
+      params.set('mana_value_max', String(filters.mana_value_max));
+    }
+    params.set('color_match', filters.color_match);
+    if (filters.has_uncolored_mana) {
+      params.set('has_uncolored_mana', 'true');
+    }
+    if (filters.has_colorless_mana) {
+      params.set('has_colorless_mana', 'true');
+    }
+    if (filters.has_generic_mana) {
+      params.set('has_generic_mana', 'true');
+    }
+    if (filters.no_colors) {
+      params.set('no_colors', 'true');
+    }
+  }
+  return requestResponse(`/api/workspace/decks/${deckId}/items/search?${params.toString()}`).then(
+    async (response) => {
+      const results = (await response.json()) as WorkspaceDeckInventorySearchResult[];
+      return {
+        results,
+        total_count: Number(response.headers.get('X-Total-Count') ?? results.length),
+        total_items: Number(
+          response.headers.get('X-Total-Items') ??
+            results.reduce((sum, result) => sum + result.items.length, 0),
+        ),
+      };
+    },
   );
 }
 

@@ -100,6 +100,31 @@ def test_repeated_collection_add_increments_quantity(client: TestClient) -> None
     assert second_response.json()["quantity"] == 3
 
 
+def test_collection_items_are_paginated_with_totals(client: TestClient) -> None:
+    for index, quantity in enumerate([2, 3, 4], start=1):
+        response = client.post(
+            "/api/collections/1/items",
+            json={
+                "card_uuid": "00000000-0000-0000-0000-000000000001",
+                "quantity": quantity,
+                "condition_code": f"NM{index}",
+            },
+        )
+        assert response.status_code == 201
+
+    first_page = client.get("/api/collections/1/items?offset=0&limit=2")
+    second_page = client.get("/api/collections/1/items?offset=2&limit=2")
+
+    assert first_page.status_code == 200
+    assert first_page.headers["x-total-count"] == "3"
+    assert first_page.headers["x-total-cards"] == "9"
+    assert len(first_page.json()) == 2
+    assert second_page.status_code == 200
+    assert second_page.headers["x-total-count"] == "3"
+    assert second_page.headers["x-total-cards"] == "9"
+    assert len(second_page.json()) == 1
+
+
 def test_regular_deck_cannot_use_wishlist_collection_item(client: TestClient) -> None:
     wishlist_item = _seed_wishlist_collection_item(client)
 
