@@ -4,11 +4,11 @@ import Button from 'primevue/button';
 import DatePicker from 'primevue/datepicker';
 import Dialog from 'primevue/dialog';
 import InputText from 'primevue/inputtext';
-import Paginator from 'primevue/paginator';
 import Select from 'primevue/select';
 import Textarea from 'primevue/textarea';
 import ToggleSwitch from 'primevue/toggleswitch';
 
+import WorkspacePaginator from '@/components/WorkspacePaginator.vue';
 import {
   addWorkspaceDeckItem,
   createWorkspaceDeck,
@@ -1426,15 +1426,12 @@ onBeforeUnmount(() => {
             </div>
             </article>
           </div>
-          <Paginator
+          <WorkspacePaginator
             v-if="searchResultTotal > searchResultRows"
-            class="deck-search-paginator"
+            class="workspace-paginator"
             :first="searchResultFirst"
             :rows="searchResultRows"
             :total-records="searchResultTotal"
-            :rows-per-page-options="[25, 50, 100, 200]"
-            template="FirstPageLink PrevPageLink PageLinks NextPageLink LastPageLink RowsPerPageDropdown CurrentPageReport"
-            current-page-report-template="{first}-{last} of {totalRecords}"
             @page="pageSearchResults"
           />
         </section>

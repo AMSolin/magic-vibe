@@ -325,13 +325,13 @@ a {
 
 .collection-workspace {
   display: grid;
-  grid-template-columns: 200px minmax(560px, 1.35fr) minmax(340px, 0.7fr);
+  grid-template-columns: 200px minmax(640px, 1.5fr) minmax(340px, 0.7fr);
   gap: 12px;
   min-height: calc(100vh - 130px);
 }
 
 .collection-workspace.sidebar-is-collapsed {
-  grid-template-columns: 56px minmax(560px, 1.35fr) minmax(340px, 0.7fr);
+  grid-template-columns: 56px minmax(640px, 1.5fr) minmax(340px, 0.7fr);
 }
 
 .decks-workspace {
@@ -774,11 +774,15 @@ a {
   gap: 8px;
 }
 
-.deck-search-paginator {
+.workspace-paginator {
   justify-content: flex-start;
   padding: 6px 0 0;
   background: transparent;
   border: 0;
+}
+
+.inventory-details-cell {
+  white-space: nowrap;
 }
 
 .deck-search-result {

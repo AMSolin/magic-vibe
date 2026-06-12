@@ -20,6 +20,7 @@ import ToggleSwitch from 'primevue/toggleswitch';
 import CardPrintingSelectors from '@/components/CardPrintingSelectors.vue';
 import type { CardPrintingSelection } from '@/components/CardPrintingSelectors.vue';
 import ScryfallSymbolsText from '@/components/ScryfallSymbolsText.vue';
+import WorkspacePaginator from '@/components/WorkspacePaginator.vue';
 import {
   addWorkspaceCollectionItem,
   createWorkspaceCollection,
@@ -47,6 +48,20 @@ import type {
 const route = useRoute();
 const router = useRouter();
 const conditions = ['NM', 'SP', 'MP', 'HP', 'D'];
+const HOVER_PREVIEW_DELAY_MS = 450;
+const CARD_NORMAL_IMAGE_WIDTH = 488;
+const CARD_NORMAL_IMAGE_HEIGHT = 680;
+const HOVER_PREVIEW_WIDTH = Math.round(CARD_NORMAL_IMAGE_WIDTH * 0.75);
+const HOVER_PREVIEW_HEIGHT = Math.round(
+  HOVER_PREVIEW_WIDTH * (CARD_NORMAL_IMAGE_HEIGHT / CARD_NORMAL_IMAGE_WIDTH),
+);
+
+type PreviewCandidate = {
+  printing_id: number;
+  language_code: string;
+  name: string;
+};
+
 const sidebarCollapsed = ref(false);
 const activeTab = ref<'info' | 'add' | 'card' | 'edit'>('info');
 const collections = ref<WorkspaceCollection[]>([]);
@@ -65,6 +80,8 @@ const newCollectionIsWishlist = ref(false);
 const createCollectionError = ref('');
 const collectionSaving = ref(false);
 const inventory = ref<WorkspaceCollectionItem[]>([]);
+const inventoryFirst = ref(0);
+const inventoryRows = ref(100);
 const selectedInventoryItem = ref<WorkspaceCollectionItem | null>(null);
 const search = ref('');
 const exactMatch = ref(false);
@@ -91,9 +108,18 @@ const cardInfoDetails = ref<CardDetails | null>(null);
 const loadingDetails = ref(false);
 const loadingEditDetails = ref(false);
 const loadingCardInfo = ref(false);
+const hoverPreview = ref<{
+  imageUrl: string;
+  fallbackImageUrl: string | null;
+  label: string;
+  x: number;
+  y: number;
+} | null>(null);
 const previewImageLoading = ref(false);
 const editImageLoading = ref(false);
 const cardInfoImageLoading = ref(false);
+const hoverPreviewLoading = ref(false);
+const hoverPreviewError = ref(false);
 const saving = ref(false);
 const message = ref('');
 const error = ref('');
@@ -106,11 +132,16 @@ let suggestTimer: number | undefined;
 let suppressNextSuggestionRefresh = false;
 let detailsRequestId = 0;
 let editDetailsRequestId = 0;
+let hoverPreviewTimer: number | null = null;
+let hoverPreviewRequestId = 0;
 
 const selectedCollection = computed(
   () => collections.value.find((collection) => collection.id === selectedCollectionId.value) ?? null,
 );
 const totalCards = computed(() => inventory.value.reduce((sum, item) => sum + item.quantity, 0));
+const paginatedInventory = computed(() =>
+  inventory.value.slice(inventoryFirst.value, inventoryFirst.value + inventoryRows.value),
+);
 const selectedPrinting = computed(() => addSelection.value?.printing ?? null);
 const cardFaces = computed(() => details.value?.card.card_faces ?? []);
 const selectedFace = computed(() => cardFaces.value[selectedFaceOrder.value] ?? details.value?.card);
@@ -167,6 +198,29 @@ const cardInfoLegalities = computed(() =>
     .filter(([, legality]) => legality !== 'not_legal')
     .map(([format, legality]) => ({ format, legality })),
 );
+const hoverPreviewStyle = computed(() => {
+  if (!hoverPreview.value) {
+    return {};
+  }
+  const gap = 14;
+  const viewportPadding = 12;
+  const maxLeft = Math.max(viewportPadding, window.innerWidth - HOVER_PREVIEW_WIDTH - viewportPadding);
+  const maxTop = Math.max(viewportPadding, window.innerHeight - HOVER_PREVIEW_HEIGHT - viewportPadding);
+  const cursorLeft = hoverPreview.value.x + gap;
+  const cursorTop = hoverPreview.value.y + gap;
+  const fallbackLeft =
+    cursorLeft + HOVER_PREVIEW_WIDTH <= window.innerWidth - viewportPadding
+      ? cursorLeft
+      : hoverPreview.value.x - HOVER_PREVIEW_WIDTH - gap;
+  const fallbackTop =
+    cursorTop + HOVER_PREVIEW_HEIGHT <= window.innerHeight - viewportPadding
+      ? cursorTop
+      : hoverPreview.value.y - HOVER_PREVIEW_HEIGHT - gap;
+  return {
+    left: `${Math.min(Math.max(viewportPadding, fallbackLeft), maxLeft)}px`,
+    top: `${Math.min(Math.max(viewportPadding, fallbackTop), maxTop)}px`,
+  };
+});
 const editChanges = computed(() => {
   const item = editItem.value;
   const selection = editSelection.value;
@@ -513,7 +567,150 @@ async function refreshEditDetails(): Promise<void> {
   }
 }
 
-async function refreshInventory(): Promise<void> {
+function pageInventory(event: { first: number; rows: number }): void {
+  stopHoverPreview();
+  inventoryFirst.value = event.first;
+  inventoryRows.value = event.rows;
+}
+
+function clampInventoryPage(): void {
+  if (inventory.value.length === 0) {
+    inventoryFirst.value = 0;
+    return;
+  }
+  if (inventoryFirst.value >= inventory.value.length) {
+    inventoryFirst.value = Math.floor((inventory.value.length - 1) / inventoryRows.value) * inventoryRows.value;
+  }
+}
+
+function inventoryItemPreviewCandidate(item: WorkspaceCollectionItem): PreviewCandidate {
+  return {
+    printing_id: item.printing_id,
+    language_code: item.language_code,
+    name: item.name,
+  };
+}
+
+function imageUrl(candidate: PreviewCandidate, preferredLanguageCode?: string): string {
+  const languageCode = preferredLanguageCode || candidate.language_code;
+  const params = new URLSearchParams({
+    language_code: languageCode,
+    preview_request: String(++hoverPreviewRequestId),
+  });
+  return `/api/workspace/printings/${candidate.printing_id}/images/normal?${params.toString()}`;
+}
+
+function rowFromMouseEvent(event: MouseEvent): HTMLTableRowElement | null {
+  return event.target instanceof Element
+    ? event.target.closest<HTMLTableRowElement>('tr[data-p-index]')
+    : null;
+}
+
+function inventoryItemFromRow(row: HTMLTableRowElement | null): WorkspaceCollectionItem | null {
+  const index = Number(row?.dataset.pIndex);
+  return Number.isInteger(index) ? paginatedInventory.value[index] ?? null : null;
+}
+
+function updateHoverPreviewPosition(event: MouseEvent): void {
+  if (!hoverPreview.value) {
+    return;
+  }
+  hoverPreview.value = {
+    ...hoverPreview.value,
+    x: event.clientX,
+    y: event.clientY,
+  };
+}
+
+function clearHoverPreviewTimer(): void {
+  if (hoverPreviewTimer !== null) {
+    window.clearTimeout(hoverPreviewTimer);
+    hoverPreviewTimer = null;
+  }
+}
+
+function startHoverPreview(event: MouseEvent, item: WorkspaceCollectionItem | null): void {
+  clearHoverPreviewTimer();
+  hoverPreview.value = null;
+  hoverPreviewLoading.value = false;
+  hoverPreviewError.value = false;
+  if (!item) {
+    return;
+  }
+  const candidate = inventoryItemPreviewCandidate(item);
+  const { clientX, clientY } = event;
+  const initialImageUrl = imageUrl(candidate);
+  const fallbackImageUrl = candidate.language_code === 'en' ? null : imageUrl(candidate, 'en');
+  hoverPreviewTimer = window.setTimeout(() => {
+    hoverPreview.value = {
+      imageUrl: initialImageUrl,
+      fallbackImageUrl,
+      label: candidate.name,
+      x: clientX,
+      y: clientY,
+    };
+    hoverPreviewLoading.value = true;
+  }, HOVER_PREVIEW_DELAY_MS);
+}
+
+function stopHoverPreview(): void {
+  clearHoverPreviewTimer();
+  hoverPreview.value = null;
+  hoverPreviewLoading.value = false;
+  hoverPreviewError.value = false;
+}
+
+function handleInventoryPointerOver(event: MouseEvent): void {
+  const row = rowFromMouseEvent(event);
+  if (
+    row &&
+    event.relatedTarget instanceof Node &&
+    row.contains(event.relatedTarget)
+  ) {
+    return;
+  }
+  startHoverPreview(event, inventoryItemFromRow(row));
+}
+
+function handleInventoryPointerOut(event: MouseEvent): void {
+  const row = rowFromMouseEvent(event);
+  if (
+    row &&
+    event.relatedTarget instanceof Node &&
+    row.contains(event.relatedTarget)
+  ) {
+    return;
+  }
+  stopHoverPreview();
+}
+
+function handleHoverPreviewLoad(): void {
+  hoverPreviewLoading.value = false;
+  hoverPreviewError.value = false;
+}
+
+function handleHoverPreviewError(): void {
+  if (
+    hoverPreview.value?.fallbackImageUrl &&
+    hoverPreview.value.imageUrl !== hoverPreview.value.fallbackImageUrl
+  ) {
+    hoverPreview.value = {
+      ...hoverPreview.value,
+      imageUrl: hoverPreview.value.fallbackImageUrl,
+    };
+    hoverPreviewLoading.value = true;
+    hoverPreviewError.value = false;
+    return;
+  }
+  hoverPreviewLoading.value = false;
+  hoverPreviewError.value = true;
+}
+
+async function refreshInventory(resetPage = false): Promise<void> {
+  if (resetPage) {
+    inventoryFirst.value = 0;
+  }
+  stopHoverPreview();
   selectedInventoryItem.value = null;
   editItem.value = null;
   editPrintings.value = [];
@@ -530,6 +727,7 @@ async function refreshInventory(): Promise<void> {
   }
   try {
     inventory.value = await listWorkspaceCollectionItems(selectedCollectionId.value);
+    clampInventoryPage();
   } catch (requestError) {
     error.value = getApiErrorMessage(requestError, 'Collection items are unavailable');
   }
@@ -585,7 +783,7 @@ async function addCard(): Promise<void> {
       condition_code: condition.value,
       quantity: quantity.value,
     });
-    await refreshInventory();
+    await refreshInventory(true);
     message.value = `Added to ${selectedCollection.value?.name ?? 'collection'}`;
   } catch (requestError) {
     error.value = getApiErrorMessage(requestError, 'Card could not be added');
@@ -681,8 +879,12 @@ watch([search, exactMatch], () => {
   suggestTimer = window.setTimeout(refreshSuggestions, 180);
 });
 
-watch(selectedCollectionId, refreshInventory);
+watch(selectedCollectionId, () => {
+  void refreshInventory(true);
+});
 watch(selectedCollectionId, resetCollectionDraft);
+
+watch([inventory, inventoryRows], clampInventoryPage);
 
 watch(
   () => route.query.collection_id,
@@ -726,6 +928,7 @@ onMounted(async () => {
 });
 
 onUnmounted(() => {
+  stopHoverPreview();
   document.removeEventListener('click', handleDocumentClick);
 });
 </script>
@@ -769,13 +972,20 @@ onUnmounted(() => {
         <h1>{{ selectedCollection?.name ?? 'Collection' }}</h1>
         <p>{{ totalCards }} cards in collection</p>
       </div>
+      <div
+        class="inventory-table-wrap"
+        @pointerover="handleInventoryPointerOver"
+        @pointermove="updateHoverPreviewPosition"
+        @pointerout="handleInventoryPointerOut"
+        @mouseover="handleInventoryPointerOver"
+        @mousemove="updateHoverPreviewPosition"
+        @mouseout="handleInventoryPointerOut"
+      >
       <DataTable
         v-model:selection="selectedInventoryItem"
-        :value="inventory"
+        :value="paginatedInventory"
         class="inventory-table"
         data-key="id"
-        paginator
-        :rows="100"
         selection-mode="single"
         :meta-key-selection="false"
         striped-rows
@@ -794,7 +1004,7 @@ onUnmounted(() => {
             />
           </template>
         </Column>
-        <Column header="Details">
+        <Column header="Details" body-class="inventory-details-cell">
           <template #body="{ data }">
             #{{ data.collector_number }} · {{ data.language_code.toUpperCase() }} · {{ data.finish }} ·
             {{ data.condition_code }}
@@ -807,6 +1017,15 @@ onUnmounted(() => {
           </template>
         </Column>
       </DataTable>
+      </div>
+      <WorkspacePaginator
+        v-if="inventory.length > inventoryRows"
+        class="workspace-paginator"
+        :first="inventoryFirst"
+        :rows="inventoryRows"
+        :total-records="inventory.length"
+        @page="pageInventory"
+      />
     </main>
 
     <aside class="inspector-pane">
@@ -1152,5 +1371,27 @@ onUnmounted(() => {
         </div>
       </template>
     </Dialog>
+
+    <div
+      v-if="hoverPreview"
+      class="deck-hover-preview"
+      :style="hoverPreviewStyle"
+      role="status"
+      aria-live="polite"
+    >
+      <img
+        v-if="!hoverPreviewError"
+        :key="hoverPreview.imageUrl"
+        :src="hoverPreview.imageUrl"
+        :alt="hoverPreview.label"
+        :class="{ 'loading-image': hoverPreviewLoading }"
+        @load="handleHoverPreviewLoad"
+        @error="handleHoverPreviewError"
+      />
+      <span v-if="hoverPreviewLoading" class="card-image-loading-overlay">Loading image</span>
+      <span v-else-if="hoverPreviewError" class="deck-hover-preview-error">
+        Image unavailable
+      </span>
+    </div>
   </section>
 </template>
