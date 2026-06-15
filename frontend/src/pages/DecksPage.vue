@@ -8,6 +8,7 @@ import Select from 'primevue/select';
 import Textarea from 'primevue/textarea';
 import ToggleSwitch from 'primevue/toggleswitch';
 
+import SearchFieldToggle from '@/components/SearchFieldToggle.vue';
 import WorkspacePaginator from '@/components/WorkspacePaginator.vue';
 import {
   addWorkspaceDeckItem,
@@ -103,6 +104,15 @@ type FilterSummaryChip = {
   iconClasses?: string[];
 };
 
+type InventoryAllocationGroup = {
+  deckId: number;
+  deckName: string;
+  sections: {
+    section: string;
+    quantity: number;
+  }[];
+};
+
 const sidebarCollapsed = ref(false);
 const decks = ref<WorkspaceDeck[]>([]);
 const players = ref<WorkspacePlayer[]>([]);
@@ -114,6 +124,7 @@ const searchResultTotal = ref(0);
 const searchResultTotalItems = ref(0);
 const expandedOracleIds = ref<Set<string>>(new Set());
 const expandedDecklistRowKeys = ref<Set<string>>(new Set());
+const expandedAllocationItemIds = ref<Set<number>>(new Set());
 const addingItemIds = ref<Set<number>>(new Set());
 const editingDeckItemIds = ref<Set<number>>(new Set());
 const openMoveMenuItemId = ref<number | null>(null);
@@ -489,7 +500,7 @@ function startHoverPreview(
   hoverPreviewError.value = false;
   if (
     event.target instanceof Element &&
-    event.target.closest('.decklist-detail-actions')
+    event.target.closest('.decklist-detail-actions, .deck-result-item-actions')
   ) {
     return;
   }
@@ -591,6 +602,10 @@ function toggleManaColor(color: string): void {
 function selectSearchField(field: WorkspaceDeckInventorySearchFilters['search_field']): void {
   clearOracleSearchContext();
   searchField.value = field;
+}
+
+function selectSearchFieldFromToggle(field: string): void {
+  selectSearchField(field as WorkspaceDeckInventorySearchFilters['search_field']);
 }
 
 function isRaritySelected(option: RarityFilterOption): boolean {
@@ -703,13 +718,62 @@ function toggleMoveMenu(event: MouseEvent, itemId: number): void {
   openMoveMenuItemId.value = itemId;
 }
 
-function formatAllocation(item: WorkspaceDeckInventoryItem): string {
-  if (item.allocations.length === 0) {
+function allocationDeckCount(item: WorkspaceDeckInventoryItem): number {
+  return new Set(item.allocations.map((allocation) => allocation.deck_id)).size;
+}
+
+function formatAllocationSummary(item: WorkspaceDeckInventoryItem): string {
+  if (item.allocated_quantity === 0) {
     return 'No deck allocations';
   }
-  return item.allocations
-    .map((allocation) => `${allocation.deck_name} / ${allocation.section}: ${allocation.quantity}`)
-    .join('; ');
+  const cardLabel = item.allocated_quantity === 1 ? 'card' : 'cards';
+  const deckCount = allocationDeckCount(item);
+  const deckLabel = deckCount === 1 ? 'deck' : 'decks';
+  return `Allocated: ${item.allocated_quantity} ${cardLabel} in ${deckCount} ${deckLabel}`;
+}
+
+function allocationGroups(item: WorkspaceDeckInventoryItem): InventoryAllocationGroup[] {
+  const groups = new Map<number, InventoryAllocationGroup>();
+  item.allocations.forEach((allocation) => {
+    const group = groups.get(allocation.deck_id);
+    if (group) {
+      const section = group.sections.find((entry) => entry.section === allocation.section);
+      if (section) {
+        section.quantity += allocation.quantity;
+      } else {
+        group.sections.push({
+          section: allocation.section,
+          quantity: allocation.quantity,
+        });
+      }
+      return;
+    }
+    groups.set(allocation.deck_id, {
+      deckId: allocation.deck_id,
+      deckName: allocation.deck_name,
+      sections: [
+        {
+          section: allocation.section,
+          quantity: allocation.quantity,
+        },
+      ],
+    });
+  });
+  return Array.from(groups.values());
+}
+
+function isAllocationExpanded(itemId: number): boolean {
+  return expandedAllocationItemIds.value.has(itemId);
+}
+
+function toggleAllocationDetails(itemId: number): void {
+  const next = new Set(expandedAllocationItemIds.value);
+  if (next.has(itemId)) {
+    next.delete(itemId);
+  } else {
+    next.add(itemId);
+  }
+  expandedAllocationItemIds.value = next;
 }
 
 function timestampToDate(timestamp: number | null | undefined): Date | null {
@@ -1165,19 +1229,11 @@ onBeforeUnmount(() => {
                 :placeholder="`Search by ${searchField}`"
                 @input="clearOracleSearchContext"
               />
-              <div class="deck-search-field-toggle" aria-label="Search field">
-                <button
-                  v-for="option in SEARCH_FIELD_OPTIONS"
-                  :key="option.value"
-                  type="button"
-                  :class="{ selected: searchField === option.value }"
-                  :aria-pressed="searchField === option.value"
-                  :title="`Search by ${option.label.toLowerCase()}`"
-                  @click="selectSearchField(option.value)"
-                >
-                  {{ option.label }}
-                </button>
-              </div>
+              <SearchFieldToggle
+                :model-value="searchField"
+                :options="SEARCH_FIELD_OPTIONS"
+                @update:model-value="selectSearchFieldFromToggle"
+              />
               <Button
                 :icon="filtersExpanded ? 'pi pi-chevron-up' : 'pi pi-sliders-h'"
                 size="small"
@@ -1408,9 +1464,47 @@ onBeforeUnmount(() => {
                     #{{ item.collector_number }} / {{ item.language }} /
                     {{ item.finish }} / {{ item.condition_code }}
                   </span>
-                  <small>{{ formatAllocation(item) }}</small>
+                  <button
+                    v-if="item.allocated_quantity > 0"
+                    type="button"
+                    class="deck-allocation-summary"
+                    @click="toggleAllocationDetails(item.collection_item_id)"
+                  >
+                    <i
+                      :class="isAllocationExpanded(item.collection_item_id) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'"
+                      aria-hidden="true"
+                    />
+                    <span>{{ formatAllocationSummary(item) }}</span>
+                  </button>
+                  <small v-else>{{ formatAllocationSummary(item) }}</small>
+                  <div
+                    v-if="item.allocated_quantity > 0 && isAllocationExpanded(item.collection_item_id)"
+                    class="deck-allocation-details"
+                  >
+                    <div
+                      v-for="group in allocationGroups(item)"
+                      :key="group.deckId"
+                      class="deck-allocation-group"
+                    >
+                      <strong>{{ group.deckName }}</strong>
+                      <span>
+                        <template
+                          v-for="(section, sectionIndex) in group.sections"
+                          :key="`${group.deckId}-${section.section}`"
+                        >
+                          <span v-if="sectionIndex > 0">, </span>
+                          {{ sectionLabel(section.section) }} x{{ section.quantity }}
+                        </template>
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <div class="deck-result-item-actions">
+                <div
+                  class="deck-result-item-actions"
+                  @pointerenter="stopHoverPreview"
+                  @mouseenter="stopHoverPreview"
+                  @mouseover.stop
+                >
                   <span>{{ item.available_quantity }} / {{ item.owned_quantity }}</span>
                   <Button
                     icon="pi pi-plus"

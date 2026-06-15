@@ -150,6 +150,29 @@ def get_card_json(set_code: str, collector_number: str, language_code: str) -> d
     return json.loads(cache_path.read_text(encoding="utf-8"))
 
 
+def get_cached_card_json(set_code: str, collector_number: str, language_code: str) -> dict | None:
+    cache_path = _cache_root() / "cards" / f"{set_code.lower()}-{collector_number}-{language_code}.json"
+    if not cache_path.is_file():
+        return None
+    return json.loads(cache_path.read_text(encoding="utf-8"))
+
+
+def get_cached_card_json_by_scryfall_id(scryfall_id: str) -> dict | None:
+    cards_root = _cache_root() / "cards"
+    if not cards_root.is_dir():
+        return None
+    for path in cards_root.glob("*.json"):
+        if not path.is_file():
+            continue
+        try:
+            card = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if card.get("id") == scryfall_id:
+            return card
+    return None
+
+
 def get_card_json_for_image(set_code: str, collector_number: str, language_code: str) -> dict:
     try:
         card = get_card_json(set_code, collector_number, language_code)

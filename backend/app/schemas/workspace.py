@@ -120,6 +120,7 @@ class WorkspaceDeckItemUpdate(BaseModel):
 
 
 class WorkspaceDeckItemAllocationRead(BaseModel):
+    deck_item_id: int
     deck_id: int
     deck_name: str
     section: str
@@ -200,8 +201,21 @@ class WorkspaceCollectionItemCreate(BaseModel):
     quantity: int = Field(default=1, ge=1)
 
 
+class WorkspaceDeckItemAllocationRemoval(BaseModel):
+    deck_item_id: int
+    quantity: int = Field(ge=1)
+
+
+class WorkspaceCollectionItemAttributeUpdate(BaseModel):
+    available_quantity: int = Field(default=0, ge=0)
+    allocation_selections: list[WorkspaceDeckItemAllocationRemoval] = Field(default_factory=list)
+    source_quantity: int = Field(ge=1)
+    allocation_signature: str
+
+
 class WorkspaceCollectionItemUpdate(WorkspaceCollectionItemCreate):
-    pass
+    allocation_removals: list[WorkspaceDeckItemAllocationRemoval] = Field(default_factory=list)
+    attribute_update: WorkspaceCollectionItemAttributeUpdate | None = None
 
 
 class WorkspaceCollectionItemRead(BaseModel):
@@ -221,5 +235,8 @@ class WorkspaceCollectionItemRead(BaseModel):
     finish: str
     condition_code: str
     quantity: int
+    allocated_quantity: int
+    available_quantity: int
+    allocations: list[WorkspaceDeckItemAllocationRead]
     mana_cost: str
     type: str

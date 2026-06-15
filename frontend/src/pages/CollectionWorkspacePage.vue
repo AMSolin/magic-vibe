@@ -19,10 +19,12 @@ import ToggleSwitch from 'primevue/toggleswitch';
 
 import CardPrintingSelectors from '@/components/CardPrintingSelectors.vue';
 import type { CardPrintingSelection } from '@/components/CardPrintingSelectors.vue';
+import SearchFieldToggle from '@/components/SearchFieldToggle.vue';
 import ScryfallSymbolsText from '@/components/ScryfallSymbolsText.vue';
 import WorkspacePaginator from '@/components/WorkspacePaginator.vue';
 import {
   addWorkspaceCollectionItem,
+  ApiError,
   createWorkspaceCollection,
   deleteWorkspaceCollection,
   deleteWorkspaceCollectionItem,
@@ -41,6 +43,7 @@ import type {
   CardPrinting,
   CardSuggestion,
   WorkspaceCollection,
+  WorkspaceCollectionAllocationSummary,
   WorkspaceCollectionItem,
   WorkspacePlayer,
 } from '@/shared/api';
@@ -55,6 +58,11 @@ const HOVER_PREVIEW_WIDTH = Math.round(CARD_NORMAL_IMAGE_WIDTH * 0.75);
 const HOVER_PREVIEW_HEIGHT = Math.round(
   HOVER_PREVIEW_WIDTH * (CARD_NORMAL_IMAGE_HEIGHT / CARD_NORMAL_IMAGE_WIDTH),
 );
+const INVENTORY_SEARCH_FIELD_OPTIONS = [
+  { label: 'Name', value: 'name' },
+  { label: 'Type', value: 'type' },
+] as const;
+type InventorySearchField = (typeof INVENTORY_SEARCH_FIELD_OPTIONS)[number]['value'];
 
 type PreviewCandidate = {
   printing_id: number;
@@ -62,8 +70,17 @@ type PreviewCandidate = {
   name: string;
 };
 
+type CollectionAllocationDeckGroup = {
+  deckId: number;
+  deckName: string;
+  sections: {
+    section: string;
+    quantity: number;
+  }[];
+};
+
 const sidebarCollapsed = ref(false);
-const activeTab = ref<'info' | 'add' | 'card' | 'edit'>('info');
+const activeTab = ref<'info' | 'add' | 'card' | 'edit' | 'allocations'>('info');
 const collections = ref<WorkspaceCollection[]>([]);
 const players = ref<WorkspacePlayer[]>([]);
 const selectedCollectionId = ref<number | null>(null);
@@ -74,14 +91,24 @@ const collectionIsDefault = ref(false);
 const collectionIsWishlist = ref(false);
 const collectionCreatedAt = ref<Date | null>(null);
 const createCollectionDialogVisible = ref(false);
+const allocationRemovalDialogVisible = ref(false);
+const attributeUpdateDialogVisible = ref(false);
+const deleteAllocatedCardDialogVisible = ref(false);
+const deleteAllocatedCollectionDialogVisible = ref(false);
 const newCollectionName = ref('');
 const newCollectionPlayerId = ref<number | null>(null);
 const newCollectionIsWishlist = ref(false);
 const createCollectionError = ref('');
 const collectionSaving = ref(false);
+const deleteCollectionAllocationSignature = ref('');
+const deleteCollectionAllocationItems = ref<WorkspaceCollectionAllocationSummary[]>([]);
+const attributeUpdateAvailableQuantity = ref(0);
+const attributeUpdateAllocationDraft = ref<Record<number, number>>({});
 const inventory = ref<WorkspaceCollectionItem[]>([]);
 const inventoryFirst = ref(0);
 const inventoryRows = ref(100);
+const inventorySearchQuery = ref('');
+const inventorySearchField = ref<InventorySearchField>('name');
 const selectedInventoryItem = ref<WorkspaceCollectionItem | null>(null);
 const search = ref('');
 const exactMatch = ref(false);
@@ -91,6 +118,66 @@ const selectedAlias = ref<CardSuggestion | null>(null);
 
 function keyruneRarityClass(rarity: string): string {
   return rarity === 'special' ? 'ss-timeshifted' : `ss-${rarity}`;
+}
+
+function allocationSectionLabel(section: string): string {
+  const labels: Record<string, string> = {
+    main: 'Main',
+    side: 'Sideboard',
+    maybe: 'Maybeboard',
+    commander: 'Commander',
+  };
+  return labels[section] ?? section;
+}
+
+function collectionAllocationSignature(items: WorkspaceCollectionAllocationSummary[]): string {
+  return items
+    .flatMap((item) => item.allocations)
+    .slice()
+    .sort((left, right) => left.deck_item_id - right.deck_item_id)
+    .map((allocation) => `${allocation.deck_item_id}:${allocation.quantity}`)
+    .join('|');
+}
+
+function collectionAllocationDeckGroups(
+  item: WorkspaceCollectionAllocationSummary,
+): CollectionAllocationDeckGroup[] {
+  const groups = new Map<number, CollectionAllocationDeckGroup>();
+  item.allocations.forEach((allocation) => {
+    const group = groups.get(allocation.deck_id);
+    if (group) {
+      const section = group.sections.find((entry) => entry.section === allocation.section);
+      if (section) {
+        section.quantity += allocation.quantity;
+      } else {
+        group.sections.push({ section: allocation.section, quantity: allocation.quantity });
+      }
+      return;
+    }
+    groups.set(allocation.deck_id, {
+      deckId: allocation.deck_id,
+      deckName: allocation.deck_name,
+      sections: [{ section: allocation.section, quantity: allocation.quantity }],
+    });
+  });
+  return Array.from(groups.values());
+}
+
+function isCollectionAllocationDeleteDetail(
+  detail: unknown,
+): detail is {
+  message: string;
+  allocation_signature: string;
+  items: WorkspaceCollectionAllocationSummary[];
+} {
+  return (
+    typeof detail === 'object' &&
+    detail !== null &&
+    'message' in detail &&
+    'allocation_signature' in detail &&
+    'items' in detail &&
+    Array.isArray((detail as { items?: unknown }).items)
+  );
 }
 const printings = ref<CardPrinting[]>([]);
 const preferredLanguageCode = ref('');
@@ -139,8 +226,18 @@ const selectedCollection = computed(
   () => collections.value.find((collection) => collection.id === selectedCollectionId.value) ?? null,
 );
 const totalCards = computed(() => inventory.value.reduce((sum, item) => sum + item.quantity, 0));
+const filteredInventory = computed(() => {
+  const query = inventorySearchQuery.value.trim().toLocaleLowerCase();
+  if (!query) {
+    return inventory.value;
+  }
+  return inventory.value.filter((item) => {
+    const value = inventorySearchField.value === 'type' ? item.type : item.name;
+    return value.toLocaleLowerCase().includes(query);
+  });
+});
 const paginatedInventory = computed(() =>
-  inventory.value.slice(inventoryFirst.value, inventoryFirst.value + inventoryRows.value),
+  filteredInventory.value.slice(inventoryFirst.value, inventoryFirst.value + inventoryRows.value),
 );
 const selectedPrinting = computed(() => addSelection.value?.printing ?? null);
 const cardFaces = computed(() => details.value?.card.card_faces ?? []);
@@ -198,6 +295,141 @@ const cardInfoLegalities = computed(() =>
     .filter(([, legality]) => legality !== 'not_legal')
     .map(([format, legality]) => ({ format, legality })),
 );
+const selectedAllocationRows = computed(() => selectedInventoryItem.value?.allocations ?? []);
+const selectedOwnedQuantity = computed(() => selectedInventoryItem.value?.quantity ?? 0);
+const selectedAllocatedQuantity = computed(() => selectedInventoryItem.value?.allocated_quantity ?? 0);
+const selectedAvailableQuantity = computed(() => selectedInventoryItem.value?.available_quantity ?? 0);
+const collectionAllocatedItems = computed<WorkspaceCollectionAllocationSummary[]>(() =>
+  inventory.value
+    .filter((item) => item.allocated_quantity > 0)
+    .map((item) => ({
+      collection_item_id: item.id,
+      name: item.name,
+      allocations: item.allocations,
+    })),
+);
+const editItemAllocated = computed(() => (editItem.value?.allocated_quantity ?? 0) > 0);
+const allocationRemovalDraft = ref<Record<number, number>>({});
+const requiredAllocationRemovals = computed(() =>
+  Math.max(0, (editItem.value?.allocated_quantity ?? 0) - editQuantity.value),
+);
+const selectedAllocationRemovals = computed(() =>
+  Object.values(allocationRemovalDraft.value).reduce((sum, value) => sum + value, 0),
+);
+const allocatedAfterRemovals = computed(() =>
+  Math.max(0, (editItem.value?.allocated_quantity ?? 0) - requiredAllocationRemovals.value),
+);
+const availableAfterRemovals = computed(() => editQuantity.value - allocatedAfterRemovals.value);
+const editIdentityChanged = computed(() => {
+  const item = editItem.value;
+  const selection = editSelection.value;
+  if (!item || !selection?.printing || selection.finishId == null) {
+    return false;
+  }
+  return (
+    item.printing_id !== selection.printing.id ||
+    item.finish_id !== selection.finishId ||
+    item.language_code !== selection.languageCode ||
+    item.condition_code !== editCondition.value
+  );
+});
+const editQuantityChanged = computed(() => {
+  const item = editItem.value;
+  return Boolean(item && item.quantity !== editQuantity.value);
+});
+const matchingAttributeUpdateItem = computed(() => {
+  const item = editItem.value;
+  const selection = editSelection.value;
+  if (!item || !selection?.printing || selection.finishId == null) {
+    return null;
+  }
+  const printingId = selection.printing.id;
+  const finishId = selection.finishId;
+  const languageCode = selection.languageCode;
+  return (
+    inventory.value.find(
+      (candidate) =>
+        candidate.id !== item.id &&
+        candidate.printing_id === printingId &&
+        candidate.finish_id === finishId &&
+        candidate.language_code === languageCode &&
+        candidate.condition_code === editCondition.value,
+    ) ?? null
+  );
+});
+const allocationRemovalChanges = computed(() => {
+  const item = editItem.value;
+  if (!item) {
+    return [];
+  }
+  return [
+    ['Allocated copies', String(item.allocated_quantity), String(allocatedAfterRemovals.value)],
+    ['Available copies', String(item.available_quantity), String(availableAfterRemovals.value)],
+  ];
+});
+const selectedAttributeUpdateAllocatedQuantity = computed(() =>
+  Object.values(attributeUpdateAllocationDraft.value).reduce((sum, value) => sum + value, 0),
+);
+const selectedAttributeUpdateQuantity = computed(
+  () => attributeUpdateAvailableQuantity.value + selectedAttributeUpdateAllocatedQuantity.value,
+);
+const attributeUpdateValid = computed(() => selectedAttributeUpdateQuantity.value > 0);
+const sourceQuantityAfterAttributeUpdate = computed(() =>
+  Math.max(0, (editItem.value?.quantity ?? 0) - selectedAttributeUpdateQuantity.value),
+);
+const targetQuantityBeforeAttributeUpdate = computed(() => matchingAttributeUpdateItem.value?.quantity ?? 0);
+const targetQuantityAfterAttributeUpdate = computed(
+  () => targetQuantityBeforeAttributeUpdate.value + selectedAttributeUpdateQuantity.value,
+);
+const attributeUpdateAllocationPayload = computed(() =>
+  Object.entries(attributeUpdateAllocationDraft.value)
+    .map(([deckItemId, quantity]) => ({ deck_item_id: Number(deckItemId), quantity }))
+    .filter((selection) => selection.quantity > 0),
+);
+const currentCardDetailsLabel = computed(() => {
+  const item = editItem.value;
+  if (!item) {
+    return '';
+  }
+  return `${item.set_code.toUpperCase()} #${item.collector_number} · ${item.language_code.toUpperCase()} · ${item.finish} · ${item.condition_code}`;
+});
+const updatedCardDetailsLabel = computed(() => {
+  const selection = editSelection.value;
+  if (!selection?.printing) {
+    return '';
+  }
+  return `${selection.setCode.toUpperCase()} #${selection.collectorNumber} · ${selection.languageCode.toUpperCase()} · ${selection.finish} · ${editCondition.value}`;
+});
+const attributeUpdateChanges = computed(() => {
+  const item = editItem.value;
+  if (!item) {
+    return [];
+  }
+  return [
+    [
+      'Current cards',
+      currentCardDetailsLabel.value,
+      String(item.quantity),
+      String(sourceQuantityAfterAttributeUpdate.value),
+    ],
+    [
+      matchingAttributeUpdateItem.value ? 'Matching cards' : 'Updated cards',
+      updatedCardDetailsLabel.value,
+      String(targetQuantityBeforeAttributeUpdate.value),
+      String(targetQuantityAfterAttributeUpdate.value),
+    ],
+  ];
+});
+const allocationRemovalValid = computed(
+  () =>
+    requiredAllocationRemovals.value > 0 &&
+    selectedAllocationRemovals.value === requiredAllocationRemovals.value,
+);
+const allocationRemovalPayload = computed(() =>
+  Object.entries(allocationRemovalDraft.value)
+    .map(([deckItemId, quantity]) => ({ deck_item_id: Number(deckItemId), quantity }))
+    .filter((removal) => removal.quantity > 0),
+);
 const hoverPreviewStyle = computed(() => {
   if (!hoverPreview.value) {
     return {};
@@ -224,7 +456,10 @@ const hoverPreviewStyle = computed(() => {
 const editChanges = computed(() => {
   const item = editItem.value;
   const selection = editSelection.value;
-  if (!item || !selection) {
+  if (!item) {
+    return [];
+  }
+  if (!selection) {
     return [];
   }
   return [
@@ -237,6 +472,7 @@ const editChanges = computed(() => {
   ].filter(([, saved, changed]) => saved !== changed);
 });
 const editDirty = computed(() => editChanges.value.length > 0);
+const editActionError = computed(() => (activeTab.value === 'edit' ? error.value : ''));
 const collectionCreatedAtTimestamp = computed(() =>
   collectionCreatedAt.value ? Math.floor(collectionCreatedAt.value.getTime() / 1000) : null,
 );
@@ -408,10 +644,16 @@ async function saveCollectionChanges(): Promise<void> {
 
 async function deleteCollection(): Promise<void> {
   const collection = selectedCollection.value;
-  if (
-    !collection ||
-    !window.confirm(`Delete ${collection.name} and all cards stored in it?`)
-  ) {
+  if (!collection) {
+    return;
+  }
+  if (collectionAllocatedItems.value.length > 0) {
+    deleteCollectionAllocationItems.value = collectionAllocatedItems.value;
+    deleteCollectionAllocationSignature.value = collectionAllocationSignature(collectionAllocatedItems.value);
+    deleteAllocatedCollectionDialogVisible.value = true;
+    return;
+  }
+  if (!window.confirm(`Delete ${collection.name} and all cards stored in it?`)) {
     return;
   }
   collectionSaving.value = true;
@@ -419,6 +661,41 @@ async function deleteCollection(): Promise<void> {
   message.value = '';
   try {
     await deleteWorkspaceCollection(collection.id);
+    collections.value = await listWorkspaceCollections();
+    selectedCollectionId.value =
+      collections.value.find((item) => item.is_default)?.id ?? collections.value[0]?.id ?? null;
+    replaceCollectionRoute(selectedCollectionId.value);
+    activeTab.value = 'info';
+    message.value = 'Collection deleted';
+  } catch (requestError) {
+    if (requestError instanceof ApiError && isCollectionAllocationDeleteDetail(requestError.detail)) {
+      deleteCollectionAllocationItems.value = requestError.detail.items;
+      deleteCollectionAllocationSignature.value = requestError.detail.allocation_signature;
+      deleteAllocatedCollectionDialogVisible.value = true;
+    } else {
+      error.value = getApiErrorMessage(requestError, 'Collection could not be deleted');
+    }
+  } finally {
+    collectionSaving.value = false;
+  }
+}
+
+async function confirmDeleteAllocatedCollection(): Promise<void> {
+  const collection = selectedCollection.value;
+  if (!collection) {
+    return;
+  }
+  collectionSaving.value = true;
+  error.value = '';
+  message.value = '';
+  try {
+    await deleteWorkspaceCollection(collection.id, {
+      remove_allocations: true,
+      allocation_signature: deleteCollectionAllocationSignature.value,
+    });
+    deleteAllocatedCollectionDialogVisible.value = false;
+    deleteCollectionAllocationItems.value = [];
+    deleteCollectionAllocationSignature.value = '';
     collections.value = await listWorkspaceCollections();
     selectedCollectionId.value =
       collections.value.find((item) => item.is_default)?.id ?? collections.value[0]?.id ?? null;
@@ -573,13 +850,25 @@ function pageInventory(event: { first: number; rows: number }): void {
   inventoryRows.value = event.rows;
 }
 
+function selectInventorySearchField(field: string): void {
+  inventorySearchField.value = field as InventorySearchField;
+  inventoryFirst.value = 0;
+}
+
+function clearInventorySearch(): void {
+  inventorySearchQuery.value = '';
+  inventorySearchField.value = 'name';
+  inventoryFirst.value = 0;
+}
+
 function clampInventoryPage(): void {
-  if (inventory.value.length === 0) {
+  if (filteredInventory.value.length === 0) {
     inventoryFirst.value = 0;
     return;
   }
-  if (inventoryFirst.value >= inventory.value.length) {
-    inventoryFirst.value = Math.floor((inventory.value.length - 1) / inventoryRows.value) * inventoryRows.value;
+  if (inventoryFirst.value >= filteredInventory.value.length) {
+    inventoryFirst.value =
+      Math.floor((filteredInventory.value.length - 1) / inventoryRows.value) * inventoryRows.value;
   }
 }
 
@@ -706,20 +995,9 @@ function handleHoverPreviewError(): void {
   hoverPreviewError.value = true;
 }
 
-async function refreshInventory(resetPage = false): Promise<void> {
+async function loadInventory(resetPage = false): Promise<void> {
   if (resetPage) {
     inventoryFirst.value = 0;
-  }
-  stopHoverPreview();
-  selectedInventoryItem.value = null;
-  editItem.value = null;
-  editPrintings.value = [];
-  editSelection.value = null;
-  editDetails.value = null;
-  editDetailsRequestId += 1;
-  cardInfoDetails.value = null;
-  if (activeTab.value === 'card' || activeTab.value === 'edit') {
-    activeTab.value = 'info';
   }
   if (selectedCollectionId.value === null) {
     inventory.value = [];
@@ -733,8 +1011,32 @@ async function refreshInventory(resetPage = false): Promise<void> {
   }
 }
 
-async function selectInventoryItem(item: WorkspaceCollectionItem): Promise<void> {
-  if (editDirty.value && editItem.value?.id !== item.id && !window.confirm('Discard unsaved changes?')) {
+async function refreshInventory(resetPage = false): Promise<void> {
+  stopHoverPreview();
+  selectedInventoryItem.value = null;
+  editItem.value = null;
+  editPrintings.value = [];
+  editSelection.value = null;
+  editDetails.value = null;
+  editDetailsRequestId += 1;
+  cardInfoDetails.value = null;
+  if (activeTab.value === 'card' || activeTab.value === 'edit' || activeTab.value === 'allocations') {
+    activeTab.value = 'info';
+  }
+  await loadInventory(resetPage);
+}
+
+async function selectInventoryItem(
+  item: WorkspaceCollectionItem,
+  nextActiveTab: 'card' | 'edit' | 'allocations' = 'card',
+  skipUnsavedPrompt = false,
+): Promise<void> {
+  if (
+    !skipUnsavedPrompt &&
+    editDirty.value &&
+    editItem.value?.id !== item.id &&
+    !window.confirm('Discard unsaved changes?')
+  ) {
     selectedInventoryItem.value = editItem.value;
     return;
   }
@@ -746,7 +1048,7 @@ async function selectInventoryItem(item: WorkspaceCollectionItem): Promise<void>
   editDetails.value = null;
   editDetailsRequestId += 1;
   message.value = '';
-  activeTab.value = 'card';
+  activeTab.value = nextActiveTab;
   loadingCardInfo.value = true;
   cardInfoFaceOrder.value = 0;
   error.value = '';
@@ -801,9 +1103,175 @@ function discardEditChanges(): void {
   editQuantity.value = item.quantity;
   editSelection.value = null;
   editPrintings.value = [...editPrintings.value];
+  allocationRemovalDialogVisible.value = false;
+  allocationRemovalDraft.value = {};
+  attributeUpdateDialogVisible.value = false;
+  resetAttributeUpdateDraft();
+}
+
+function resetAllocationRemovalDraft(): void {
+  const item = editItem.value;
+  allocationRemovalDraft.value = Object.fromEntries(
+    (item?.allocations ?? []).map((allocation) => [allocation.deck_item_id, 0]),
+  );
+}
+
+function allocationSignature(allocations: WorkspaceCollectionItem['allocations']): string {
+  return allocations
+    .slice()
+    .sort((left, right) => left.deck_item_id - right.deck_item_id)
+    .map((allocation) => `${allocation.deck_item_id}:${allocation.quantity}`)
+    .join('|');
+}
+
+function allocationRemovalQuantity(deckItemId: number): number {
+  return allocationRemovalDraft.value[deckItemId] ?? 0;
+}
+
+function allocationRemovalMax(deckItemId: number, allocationQuantity: number): number {
+  const currentQuantity = allocationRemovalQuantity(deckItemId);
+  const maxForCurrentRow = Math.max(
+    0,
+    requiredAllocationRemovals.value - (selectedAllocationRemovals.value - currentQuantity),
+  );
+  return Math.min(allocationQuantity, maxForCurrentRow);
+}
+
+function setAllocationRemovalQuantity(deckItemId: number, value: number | null): void {
+  const allocation = editItem.value?.allocations.find(
+    (entry) => entry.deck_item_id === deckItemId,
+  );
+  const maxQuantity = allocation ? allocationRemovalMax(deckItemId, allocation.quantity) : 0;
+  allocationRemovalDraft.value = {
+    ...allocationRemovalDraft.value,
+    [deckItemId]: Math.min(maxQuantity, Math.max(0, value ?? 0)),
+  };
+}
+
+function resetAttributeUpdateDraft(): void {
+  const item = editItem.value;
+  attributeUpdateAvailableQuantity.value = 0;
+  attributeUpdateAllocationDraft.value = Object.fromEntries(
+    (item?.allocations ?? []).map((allocation) => [allocation.deck_item_id, 0]),
+  );
+}
+
+function attributeUpdateAllocatedQuantity(deckItemId: number): number {
+  return attributeUpdateAllocationDraft.value[deckItemId] ?? 0;
+}
+
+function attributeUpdateRowMax(currentQuantity: number, rowQuantity: number): number {
+  const itemQuantity = editItem.value?.quantity ?? 0;
+  const maxForCurrentRow = Math.max(
+    0,
+    itemQuantity - (selectedAttributeUpdateQuantity.value - currentQuantity),
+  );
+  return Math.min(rowQuantity, maxForCurrentRow);
+}
+
+function attributeUpdateAvailableMax(): number {
+  const item = editItem.value;
+  return attributeUpdateRowMax(attributeUpdateAvailableQuantity.value, item?.available_quantity ?? 0);
+}
+
+function attributeUpdateAllocationMax(deckItemId: number, allocationQuantity: number): number {
+  return attributeUpdateRowMax(attributeUpdateAllocatedQuantity(deckItemId), allocationQuantity);
+}
+
+function setAttributeUpdateAvailableQuantity(value: number | null): void {
+  attributeUpdateAvailableQuantity.value = Math.min(
+    attributeUpdateAvailableMax(),
+    Math.max(0, value ?? 0),
+  );
+}
+
+function setAttributeUpdateAllocatedQuantity(deckItemId: number, value: number | null): void {
+  const allocation = editItem.value?.allocations.find(
+    (entry) => entry.deck_item_id === deckItemId,
+  );
+  const maxQuantity = allocation ? attributeUpdateAllocationMax(deckItemId, allocation.quantity) : 0;
+  attributeUpdateAllocationDraft.value = {
+    ...attributeUpdateAllocationDraft.value,
+    [deckItemId]: Math.min(maxQuantity, Math.max(0, value ?? 0)),
+  };
+}
+
+async function saveCardChangesWithRemovals(
+  allocationRemovals: { deck_item_id: number; quantity: number }[] = [],
+): Promise<void> {
+  const item = editItem.value;
+  const selection = editSelection.value;
+  if (
+    selectedCollectionId.value === null ||
+    !item ||
+    !editDirty.value
+  ) {
+    return;
+  }
+  const payload = editItemAllocated.value
+    ? {
+        printing_id: item.printing_id,
+        finish_id: item.finish_id,
+        language_code: item.language_code,
+        condition_code: item.condition_code,
+        quantity: editQuantity.value,
+        allocation_removals: allocationRemovals,
+      }
+    : selection?.printing && selection.finishId != null
+      ? {
+          printing_id: selection.printing.id,
+          finish_id: selection.finishId,
+          language_code: selection.languageCode,
+          condition_code: editCondition.value,
+          quantity: editQuantity.value,
+          allocation_removals: allocationRemovals,
+        }
+      : null;
+  if (!payload) {
+    return;
+  }
+  saving.value = true;
+  error.value = '';
+  message.value = '';
+  try {
+    const updated = await updateWorkspaceCollectionItem(selectedCollectionId.value, item.id, payload);
+    await loadInventory();
+    const refreshedItem = inventory.value.find((inventoryItem) => inventoryItem.id === updated.id) ?? updated;
+    await selectInventoryItem(refreshedItem, 'edit', true);
+    allocationRemovalDialogVisible.value = false;
+    allocationRemovalDraft.value = {};
+    activeTab.value = 'edit';
+    message.value = 'Changes saved';
+  } catch (requestError) {
+    error.value = getApiErrorMessage(requestError, 'Card changes could not be saved');
+  } finally {
+    saving.value = false;
+  }
 }
 
 async function saveCardChanges(): Promise<void> {
+  const item = editItem.value;
+  if (!item || !editDirty.value) {
+    return;
+  }
+  if (editIdentityChanged.value && editQuantityChanged.value) {
+    error.value = 'Save quantity changes separately before changing card attributes.';
+    return;
+  }
+  if (editIdentityChanged.value) {
+    resetAttributeUpdateDraft();
+    attributeUpdateDialogVisible.value = true;
+    return;
+  }
+  if (editItemAllocated.value && editQuantity.value < item.allocated_quantity) {
+    resetAllocationRemovalDraft();
+    allocationRemovalDialogVisible.value = true;
+    return;
+  }
+  await saveCardChangesWithRemovals();
+}
+
+async function confirmAttributeUpdate(): Promise<void> {
   const item = editItem.value;
   const selection = editSelection.value;
   if (
@@ -811,7 +1279,7 @@ async function saveCardChanges(): Promise<void> {
     !item ||
     !selection?.printing ||
     selection.finishId == null ||
-    !editDirty.value
+    !attributeUpdateValid.value
   ) {
     return;
   }
@@ -824,11 +1292,19 @@ async function saveCardChanges(): Promise<void> {
       finish_id: selection.finishId,
       language_code: selection.languageCode,
       condition_code: editCondition.value,
-      quantity: editQuantity.value,
+      quantity: item.quantity,
+      attribute_update: {
+        available_quantity: attributeUpdateAvailableQuantity.value,
+        allocation_selections: attributeUpdateAllocationPayload.value,
+        source_quantity: item.quantity,
+        allocation_signature: allocationSignature(item.allocations),
+      },
     });
-    await refreshInventory();
-    await selectInventoryItem(updated);
-    activeTab.value = 'edit';
+    await loadInventory();
+    const refreshedItem = inventory.value.find((inventoryItem) => inventoryItem.id === updated.id) ?? updated;
+    await selectInventoryItem(refreshedItem, 'edit', true);
+    attributeUpdateDialogVisible.value = false;
+    resetAttributeUpdateDraft();
     message.value = 'Changes saved';
   } catch (requestError) {
     error.value = getApiErrorMessage(requestError, 'Card changes could not be saved');
@@ -837,13 +1313,26 @@ async function saveCardChanges(): Promise<void> {
   }
 }
 
+async function confirmAllocationRemovalSave(): Promise<void> {
+  if (!allocationRemovalValid.value) {
+    return;
+  }
+  await saveCardChangesWithRemovals(allocationRemovalPayload.value);
+}
+
 async function deleteCard(): Promise<void> {
   const item = editItem.value;
   if (
     selectedCollectionId.value === null ||
-    !item ||
-    !window.confirm(`Delete ${item.name} from this collection?`)
+    !item
   ) {
+    return;
+  }
+  if (item.allocated_quantity > 0) {
+    deleteAllocatedCardDialogVisible.value = true;
+    return;
+  }
+  if (!window.confirm(`Delete ${item.name} from this collection?`)) {
     return;
   }
   saving.value = true;
@@ -851,6 +1340,29 @@ async function deleteCard(): Promise<void> {
   message.value = '';
   try {
     await deleteWorkspaceCollectionItem(selectedCollectionId.value, item.id);
+    await refreshInventory();
+    activeTab.value = 'info';
+    message.value = 'Card deleted';
+  } catch (requestError) {
+    error.value = getApiErrorMessage(requestError, 'Card could not be deleted');
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function confirmDeleteAllocatedCard(): Promise<void> {
+  const item = editItem.value;
+  if (selectedCollectionId.value === null || !item) {
+    return;
+  }
+  saving.value = true;
+  error.value = '';
+  message.value = '';
+  try {
+    await deleteWorkspaceCollectionItem(selectedCollectionId.value, item.id, {
+      remove_allocations: true,
+    });
+    deleteAllocatedCardDialogVisible.value = false;
     await refreshInventory();
     activeTab.value = 'info';
     message.value = 'Card deleted';
@@ -884,7 +1396,11 @@ watch(selectedCollectionId, () => {
 });
 watch(selectedCollectionId, resetCollectionDraft);
 
-watch([inventory, inventoryRows], clampInventoryPage);
+watch([inventorySearchQuery, inventorySearchField], () => {
+  inventoryFirst.value = 0;
+});
+
+watch([filteredInventory, inventoryRows], clampInventoryPage);
 
 watch(
   () => route.query.collection_id,
@@ -972,6 +1488,29 @@ onUnmounted(() => {
         <h1>{{ selectedCollection?.name ?? 'Collection' }}</h1>
         <p>{{ totalCards }} cards in collection</p>
       </div>
+      <div class="inventory-search-row">
+        <InputText
+          v-model="inventorySearchQuery"
+          class="inventory-search-input"
+          :placeholder="`Search by ${inventorySearchField}`"
+        />
+        <SearchFieldToggle
+          :model-value="inventorySearchField"
+          :options="INVENTORY_SEARCH_FIELD_OPTIONS"
+          @update:model-value="selectInventorySearchField"
+        />
+        <Button
+          icon="pi pi-times"
+          size="small"
+          severity="secondary"
+          text
+          rounded
+          aria-label="Clear collection search"
+          title="Clear collection search"
+          :disabled="!inventorySearchQuery && inventorySearchField === 'name'"
+          @click="clearInventorySearch"
+        />
+      </div>
       <div
         class="inventory-table-wrap"
         @pointerover="handleInventoryPointerOver"
@@ -991,9 +1530,17 @@ onUnmounted(() => {
         striped-rows
         @row-select="selectInventoryItem($event.data)"
       >
-        <template #empty>No cards in this collection.</template>
+        <template #empty>
+          {{ inventorySearchQuery ? 'No cards match this search.' : 'No cards in this collection.' }}
+        </template>
         <Column field="quantity" header="Qty" />
-        <Column field="quantity" header="Avail." />
+        <Column field="available_quantity" header="Avail.">
+          <template #body="{ data }">
+            <span :title="data.allocated_quantity > 0 ? `${data.allocated_quantity} allocated to decks` : undefined">
+              {{ data.available_quantity }}
+            </span>
+          </template>
+        </Column>
         <Column field="name" header="Name" />
         <Column field="set_code" header="Set">
           <template #body="{ data }">
@@ -1019,26 +1566,33 @@ onUnmounted(() => {
       </DataTable>
       </div>
       <WorkspacePaginator
-        v-if="inventory.length > inventoryRows"
+        v-if="filteredInventory.length > inventoryRows"
         class="workspace-paginator"
         :first="inventoryFirst"
         :rows="inventoryRows"
-        :total-records="inventory.length"
+        :total-records="filteredInventory.length"
         @page="pageInventory"
       />
     </main>
 
     <aside class="inspector-pane">
-      <Tabs v-model:value="activeTab" class="inspector-tabs">
-        <TabList>
-          <Tab value="info">Collection info</Tab>
-          <Tab value="add">Add cards</Tab>
-          <Tab v-if="selectedInventoryItem" value="card">Card info</Tab>
-          <Tab v-if="selectedInventoryItem" value="edit">Edit card</Tab>
-        </TabList>
-      </Tabs>
+      <div class="inspector-tab-groups">
+        <Tabs v-model:value="activeTab" class="inspector-tabs">
+          <TabList>
+            <Tab value="info">Collection info</Tab>
+            <Tab value="add">Add cards</Tab>
+          </TabList>
+        </Tabs>
+        <Tabs v-if="selectedInventoryItem" v-model:value="activeTab" class="inspector-tabs">
+          <TabList>
+            <Tab value="card">Card info</Tab>
+            <Tab value="edit">Edit card</Tab>
+            <Tab value="allocations">Allocations</Tab>
+          </TabList>
+        </Tabs>
+      </div>
 
-      <p v-if="error" class="panel-error" role="alert">
+      <p v-if="error && activeTab !== 'edit'" class="panel-error" role="alert">
         <i class="pi pi-exclamation-triangle" aria-hidden="true" />
         <span>{{ error }}</span>
       </p>
@@ -1196,6 +1750,9 @@ onUnmounted(() => {
               {{ loadingEditDetails ? 'Loading image…' : 'Image unavailable' }}
             </span>
           </button>
+          <p v-if="editItemAllocated" class="panel-note">
+            Attribute changes can be applied to selected copies while preserving deck allocations.
+          </p>
           <CardPrintingSelectors
             :printings="editPrintings"
             :preferred-language-code="editItem.language_code"
@@ -1223,6 +1780,10 @@ onUnmounted(() => {
               <span>{{ changed }}</span>
             </div>
           </details>
+          <p v-if="editActionError" class="panel-error" role="alert">
+            <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+            <span>{{ editActionError }}</span>
+          </p>
           <div class="panel-actions edit-actions">
             <span v-if="message" class="success-text">{{ message }}</span>
             <Button
@@ -1245,6 +1806,34 @@ onUnmounted(() => {
               :loading="saving"
               @click="deleteCard"
             />
+          </div>
+        </template>
+      </section>
+
+      <section v-else-if="activeTab === 'allocations'" class="inspector-content allocations-inspector">
+        <template v-if="selectedInventoryItem">
+          <div class="selected-alias">{{ selectedInventoryItem.name }}</div>
+          <div class="allocation-summary-grid">
+            <div>
+              <span>Owned</span>
+              <strong>{{ selectedOwnedQuantity }}</strong>
+            </div>
+            <div>
+              <span>Available</span>
+              <strong>{{ selectedAvailableQuantity }}</strong>
+            </div>
+            <div>
+              <span>Allocated</span>
+              <strong>{{ selectedAllocatedQuantity }}</strong>
+            </div>
+          </div>
+          <p v-if="!selectedAllocationRows.length" class="empty-state">No deck allocations.</p>
+          <div v-else class="allocation-list">
+            <div v-for="allocation in selectedAllocationRows" :key="allocation.deck_item_id" class="allocation-row">
+              <strong>{{ allocation.deck_name }}</strong>
+              <span>{{ allocationSectionLabel(allocation.section) }}</span>
+              <b>{{ allocation.quantity }}</b>
+            </div>
           </div>
         </template>
       </section>
@@ -1367,6 +1956,240 @@ onUnmounted(() => {
             :disabled="!newCollectionName.trim() || newCollectionPlayerId === null"
             :loading="collectionSaving"
             @click="createCollection"
+          />
+        </div>
+      </template>
+    </Dialog>
+
+    <Dialog
+      v-model:visible="attributeUpdateDialogVisible"
+      modal
+      header="Apply card detail changes"
+      class="allocation-resolution-dialog"
+    >
+      <template v-if="editItem">
+        <div class="dialog-fields">
+          <p class="panel-note">
+            Choose which copies should receive the new card details. Deck allocations will be preserved.
+          </p>
+          <div class="allocation-resolution-list">
+            <div class="allocation-resolution-row">
+              <div>
+                <strong>Available cards</strong>
+                <span>Not allocated to decks</span>
+              </div>
+              <InputNumber
+                :model-value="attributeUpdateAvailableQuantity"
+                :min="0"
+                :max="attributeUpdateAvailableMax()"
+                show-buttons
+                @update:model-value="setAttributeUpdateAvailableQuantity($event)"
+              />
+              <b>/ {{ editItem.available_quantity }}</b>
+            </div>
+            <div
+              v-for="allocation in editItem.allocations"
+              :key="allocation.deck_item_id"
+              class="allocation-resolution-row"
+            >
+              <div>
+                <strong>{{ allocation.deck_name }}</strong>
+                <span>{{ allocationSectionLabel(allocation.section) }}</span>
+              </div>
+              <InputNumber
+                :model-value="attributeUpdateAllocatedQuantity(allocation.deck_item_id)"
+                :min="0"
+                :max="attributeUpdateAllocationMax(allocation.deck_item_id, allocation.quantity)"
+                show-buttons
+                @update:model-value="setAttributeUpdateAllocatedQuantity(allocation.deck_item_id, $event)"
+              />
+              <b>/ {{ allocation.quantity }}</b>
+            </div>
+          </div>
+          <div class="allocation-removal-changes unsaved-changes">
+            <div
+              v-for="[label, detailsLabel, saved, changed] in attributeUpdateChanges"
+              :key="label"
+              class="attribute-change-row"
+            >
+              <strong>{{ label }}</strong>
+              <span>{{ detailsLabel }}</span>
+              <span>{{ saved }}</span>
+              <i class="pi pi-arrow-right" />
+              <span>{{ changed }}</span>
+            </div>
+          </div>
+          <p class="allocation-progress" :class="{ valid: attributeUpdateValid, invalid: !attributeUpdateValid }">
+            {{
+              attributeUpdateValid
+                ? `Selected ${selectedAttributeUpdateQuantity} ${selectedAttributeUpdateQuantity === 1 ? 'copy' : 'copies'} to update.`
+                : 'Select at least 1 copy to update.'
+            }}
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="dialog-actions">
+          <Button label="Cancel" severity="secondary" @click="attributeUpdateDialogVisible = false" />
+          <Button
+            icon="pi pi-save"
+            label="Save changes"
+            :disabled="!attributeUpdateValid"
+            :loading="saving"
+            @click="confirmAttributeUpdate"
+          />
+        </div>
+      </template>
+    </Dialog>
+
+    <Dialog
+      v-model:visible="allocationRemovalDialogVisible"
+      modal
+      header="Choose affected deck copies"
+      class="allocation-resolution-dialog"
+    >
+      <template v-if="editItem">
+        <div class="dialog-fields">
+          <p class="panel-note">
+            Select exactly {{ requiredAllocationRemovals }} deck-allocated
+            {{ requiredAllocationRemovals === 1 ? 'copy' : 'copies' }} to remove.
+            {{ requiredAllocationRemovals === 1 ? 'This copy' : 'These copies' }}
+            will also be removed from this collection.
+          </p>
+          <div class="allocation-resolution-list">
+            <div
+              v-for="allocation in editItem.allocations"
+              :key="allocation.deck_item_id"
+              class="allocation-resolution-row"
+            >
+              <div>
+                <strong>{{ allocation.deck_name }}</strong>
+                <span>{{ allocationSectionLabel(allocation.section) }}</span>
+              </div>
+              <InputNumber
+                :model-value="allocationRemovalQuantity(allocation.deck_item_id)"
+                :min="0"
+                :max="allocationRemovalMax(allocation.deck_item_id, allocation.quantity)"
+                show-buttons
+                @update:model-value="setAllocationRemovalQuantity(allocation.deck_item_id, $event)"
+              />
+              <b>/ {{ allocation.quantity }}</b>
+            </div>
+          </div>
+          <div class="allocation-removal-changes unsaved-changes">
+            <div v-for="[label, saved, changed] in allocationRemovalChanges" :key="label" class="change-row">
+              <strong>{{ label }}</strong>
+              <span>{{ saved }}</span>
+              <i class="pi pi-arrow-right" />
+              <span>{{ changed }}</span>
+            </div>
+          </div>
+          <p class="allocation-progress" :class="{ valid: allocationRemovalValid, invalid: !allocationRemovalValid }">
+            Selected {{ selectedAllocationRemovals }} of {{ requiredAllocationRemovals }} required allocated copies.
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="dialog-actions">
+          <Button label="Cancel" severity="secondary" @click="allocationRemovalDialogVisible = false" />
+          <Button
+            icon="pi pi-save"
+            label="Save changes"
+            :disabled="!allocationRemovalValid"
+            :loading="saving"
+            @click="confirmAllocationRemovalSave"
+          />
+        </div>
+      </template>
+    </Dialog>
+
+    <Dialog
+      v-model:visible="deleteAllocatedCardDialogVisible"
+      modal
+      header="Delete allocated card"
+      class="allocation-resolution-dialog"
+    >
+      <template v-if="editItem">
+        <div class="dialog-fields">
+          <p class="panel-error" role="alert">
+            <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+            <span>
+              This card is allocated to decks. Deleting it from the collection will also remove these deck allocations.
+            </span>
+          </p>
+          <div class="allocation-list">
+            <div v-for="allocation in editItem.allocations" :key="allocation.deck_item_id" class="allocation-row">
+              <strong>{{ allocation.deck_name }}</strong>
+              <span>{{ allocationSectionLabel(allocation.section) }}</span>
+              <b>{{ allocation.quantity }}</b>
+            </div>
+          </div>
+        </div>
+      </template>
+      <template #footer>
+        <div class="dialog-actions">
+          <Button label="Cancel" severity="secondary" @click="deleteAllocatedCardDialogVisible = false" />
+          <Button
+            icon="pi pi-trash"
+            label="Delete card"
+            severity="danger"
+            :loading="saving"
+            @click="confirmDeleteAllocatedCard"
+          />
+        </div>
+      </template>
+    </Dialog>
+
+    <Dialog
+      v-model:visible="deleteAllocatedCollectionDialogVisible"
+      modal
+      header="Delete allocated collection"
+      class="allocation-resolution-dialog"
+    >
+      <div class="dialog-fields">
+        <p class="panel-error" role="alert">
+          <i class="pi pi-exclamation-triangle" aria-hidden="true" />
+          <span>
+            This collection contains cards allocated to decks. Deleting the collection will also remove those deck allocations.
+          </span>
+        </p>
+        <div class="collection-allocation-delete-list">
+          <div
+            v-for="item in deleteCollectionAllocationItems"
+            :key="item.collection_item_id"
+            class="collection-allocation-delete-item"
+          >
+            <strong>{{ item.name }}</strong>
+            <div class="collection-allocation-deck-list">
+              <div
+                v-for="group in collectionAllocationDeckGroups(item)"
+                :key="group.deckId"
+                class="collection-allocation-deck-row"
+              >
+                <span>{{ group.deckName }}</span>
+                <b>
+                  <template
+                    v-for="(section, sectionIndex) in group.sections"
+                    :key="`${group.deckId}-${section.section}`"
+                  >
+                    <span v-if="sectionIndex > 0">, </span>
+                    {{ allocationSectionLabel(section.section) }} x{{ section.quantity }}
+                  </template>
+                </b>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <template #footer>
+        <div class="dialog-actions">
+          <Button label="Cancel" severity="secondary" @click="deleteAllocatedCollectionDialogVisible = false" />
+          <Button
+            icon="pi pi-trash"
+            label="Delete collection"
+            severity="danger"
+            :loading="collectionSaving"
+            @click="confirmDeleteAllocatedCollection"
           />
         </div>
       </template>

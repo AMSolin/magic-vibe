@@ -161,7 +161,41 @@ def _localized_card_details(printing_id: int, card: dict, language_code: str | N
     return card
 
 
-def _item_read(item: CollectionItem) -> WorkspaceCollectionItemRead:
+def _catalog_card_details(printing: dict, language_code: str | None = None) -> dict:
+    faces = catalog.get_localized_printing_faces(printing["id"], language_code)
+    if len(faces) == 1:
+        face = faces[0]
+        return {
+            "id": printing["scryfall_id"],
+            "name": printing["name"],
+            "printed_name": face["name"],
+            "mana_cost": face["mana_cost"],
+            "type_line": face["type_line"],
+            "printed_type_line": face["type_line"],
+            "oracle_text": face["oracle_text"],
+            "printed_text": face["oracle_text"],
+            "flavor_text": face["flavor_text"],
+        }
+    return {
+        "id": printing["scryfall_id"],
+        "name": printing["name"],
+        "card_faces": [
+            {
+                "name": face["name"],
+                "printed_name": face["name"],
+                "mana_cost": face["mana_cost"],
+                "type_line": face["type_line"],
+                "printed_type_line": face["type_line"],
+                "oracle_text": face["oracle_text"],
+                "printed_text": face["oracle_text"],
+                "flavor_text": face["flavor_text"],
+            }
+            for face in faces
+        ],
+    }
+
+
+def _item_read(db: Session, item: CollectionItem) -> WorkspaceCollectionItemRead:
     try:
         printing = catalog.get_printing_by_scryfall_id(item.scryfall_id)
         finish = catalog.finish_name(item.finish_id)
@@ -174,6 +208,8 @@ def _item_read(item: CollectionItem) -> WorkspaceCollectionItemRead:
             status_code=status.HTTP_409_CONFLICT,
             detail="Collection item no longer resolves to the installed catalog",
         )
+    allocations = _allocation_breakdown(db, [item.id]).get(item.id, [])
+    allocated_quantity = sum(allocation["quantity"] for allocation in allocations)
     return WorkspaceCollectionItemRead(
         id=item.id,
         printing_id=printing["id"],
@@ -191,12 +227,15 @@ def _item_read(item: CollectionItem) -> WorkspaceCollectionItemRead:
         finish=finish,
         condition_code=item.condition_code,
         quantity=item.quantity,
+        allocated_quantity=allocated_quantity,
+        available_quantity=max(0, item.quantity - allocated_quantity),
+        allocations=allocations,
         mana_cost=printing["mana_cost"],
         type=faces[0]["type_line"],
     )
 
 
-def _items_read(items: list[CollectionItem]) -> list[WorkspaceCollectionItemRead]:
+def _items_read(db: Session, items: list[CollectionItem]) -> list[WorkspaceCollectionItemRead]:
     if not items:
         return []
     try:
@@ -214,6 +253,7 @@ def _items_read(items: list[CollectionItem]) -> list[WorkspaceCollectionItemRead
     except FileNotFoundError as error:
         raise _catalog_error(error) from error
 
+    allocation_breakdown = _allocation_breakdown(db, [item.id for item in items])
     reads: list[WorkspaceCollectionItemRead] = []
     for item in items:
         printing = printings.get(item.scryfall_id)
@@ -225,6 +265,8 @@ def _items_read(items: list[CollectionItem]) -> list[WorkspaceCollectionItemRead
                 status_code=status.HTTP_409_CONFLICT,
                 detail="Collection item no longer resolves to the installed catalog",
             )
+        item_allocations = allocation_breakdown.get(item.id, [])
+        allocated_quantity = sum(allocation["quantity"] for allocation in item_allocations)
         reads.append(
             WorkspaceCollectionItemRead(
                 id=item.id,
@@ -243,10 +285,20 @@ def _items_read(items: list[CollectionItem]) -> list[WorkspaceCollectionItemRead
                 finish=finish,
                 condition_code=item.condition_code,
                 quantity=item.quantity,
+                allocated_quantity=allocated_quantity,
+                available_quantity=max(0, item.quantity - allocated_quantity),
+                allocations=item_allocations,
                 mana_cost=printing["mana_cost"],
                 type=faces[0]["type_line"],
             )
         )
+    created_at_by_id = {item.id: item.created_at for item in items}
+    reads.sort(
+        key=lambda read: (
+            read.name.casefold(),
+            -created_at_by_id[read.id],
+        )
+    )
     return reads
 
 
@@ -417,6 +469,7 @@ def _allocation_breakdown(
             db.execute(
                 select(
                     DeckItem.collection_item_id,
+                    DeckItem.id,
                     DeckItem.deck_id,
                     Deck.name,
                     DeckItem.section,
@@ -426,11 +479,12 @@ def _allocation_breakdown(
                 .where(DeckItem.collection_item_id.in_(chunk))
                 .order_by(Deck.name, DeckItem.section, DeckItem.id)
             ).all()
-        )
+    )
     breakdown: dict[int, list[dict]] = {}
-    for collection_item_id, deck_id, deck_name, section, quantity in rows:
+    for collection_item_id, deck_item_id, deck_id, deck_name, section, quantity in rows:
         breakdown.setdefault(collection_item_id, []).append(
             {
+                "deck_item_id": deck_item_id,
                 "deck_id": deck_id,
                 "deck_name": deck_name,
                 "section": section,
@@ -438,6 +492,68 @@ def _allocation_breakdown(
             }
         )
     return breakdown
+
+
+def _collection_allocation_summary(
+    db: Session,
+    collection_id: int,
+) -> tuple[list[dict], str]:
+    rows = db.execute(
+        select(
+            CollectionItem.id,
+            CollectionItem.scryfall_id,
+            DeckItem.id,
+            DeckItem.deck_id,
+            Deck.name,
+            DeckItem.section,
+            DeckItem.quantity,
+        )
+        .join(DeckItem, DeckItem.collection_item_id == CollectionItem.id)
+        .join(Deck, Deck.id == DeckItem.deck_id)
+        .where(CollectionItem.collection_id == collection_id)
+        .order_by(CollectionItem.id, Deck.name, DeckItem.section, DeckItem.id)
+    ).all()
+    signature = "|".join(
+        f"{deck_item_id}:{quantity}"
+        for _item_id, _scryfall_id, deck_item_id, _deck_id, _deck_name, _section, quantity in sorted(
+            rows,
+            key=lambda row: row[2],
+        )
+    )
+    if not rows:
+        return [], signature
+    try:
+        printings = catalog.get_printings_by_scryfall_ids(
+            list({scryfall_id for _item_id, scryfall_id, *_rest in rows})
+        )
+    except FileNotFoundError as error:
+        raise _catalog_error(error) from error
+    item_summaries: dict[int, dict] = {}
+    for item_id, scryfall_id, deck_item_id, deck_id, deck_name, section, quantity in rows:
+        item_summary = item_summaries.get(item_id)
+        if item_summary is None:
+            printing = printings.get(scryfall_id)
+            if printing is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Collection item no longer resolves to the installed catalog",
+                )
+            item_summary = {
+                "collection_item_id": item_id,
+                "name": printing["name"],
+                "allocations": [],
+            }
+            item_summaries[item_id] = item_summary
+        item_summary["allocations"].append(
+            {
+                "deck_item_id": deck_item_id,
+                "deck_id": deck_id,
+                "deck_name": deck_name,
+                "section": section,
+                "quantity": quantity,
+            }
+        )
+    return list(item_summaries.values()), signature
 
 
 def _matches_color_filters(
@@ -523,7 +639,11 @@ def _attached_inventory_item_read(
     )
 
 
-def _attached_collection_item_read(row: dict) -> WorkspaceCollectionItemRead:
+def _attached_collection_item_read(
+    row: dict,
+    allocations: list[dict] | None = None,
+) -> WorkspaceCollectionItemRead:
+    allocated_quantity = int(row["allocated_quantity"])
     return WorkspaceCollectionItemRead(
         id=row["collection_item_id"],
         printing_id=row["printing_id"],
@@ -541,6 +661,9 @@ def _attached_collection_item_read(row: dict) -> WorkspaceCollectionItemRead:
         finish=row["finish"],
         condition_code=row["condition_code"],
         quantity=row["owned_quantity"],
+        allocated_quantity=allocated_quantity,
+        available_quantity=max(0, row["owned_quantity"] - allocated_quantity),
+        allocations=allocations or [],
         mana_cost=row["mana_cost"],
         type=row["type_line"],
     )
@@ -883,26 +1006,38 @@ def _attached_collection_items(
         rows = connection.execute(
             f"""
             select
+                coalesce(a.allocated_quantity, 0) as allocated_quantity,
                 {ATTACHED_ITEM_SELECT_BASE}
             from collection_items as ci
             {ATTACHED_ITEM_JOINS_BASIC}
+            left join (
+                select collection_item_id, sum(quantity) as allocated_quantity
+                from deck_items
+                group by collection_item_id
+            ) as a on a.collection_item_id = ci.id
             where ci.collection_id = ?
-            order by ci.created_at desc, ci.id desc
+            order by unicode_casefold(localized_name) asc, ci.created_at desc
             """,
             (collection_id,),
         ).fetchall()
     finally:
         if connection is not None:
             connection.close()
+    row_dicts = [
+        {
+            **dict(row),
+            "scryfall_id": str(UUID(bytes=row["scryfall_id"])),
+            "oracle_id": str(UUID(bytes=row["oracle_id"])),
+        }
+        for row in rows
+    ]
+    allocations = _allocation_breakdown(db, [row["collection_item_id"] for row in row_dicts])
     return [
         _attached_collection_item_read(
-            {
-                **dict(row),
-                "scryfall_id": str(UUID(bytes=row["scryfall_id"])),
-                "oracle_id": str(UUID(bytes=row["oracle_id"])),
-            }
+            row,
+            allocations.get(row["collection_item_id"], []),
         )
-        for row in rows
+        for row in row_dicts
     ]
 
 
@@ -1075,6 +1210,12 @@ def _cached_oracle_image(
         if cached_image is not None:
             return cached_image
     return None
+
+
+def _card_image_response(image_path: Path, media_type: str) -> FileResponse:
+    response = FileResponse(image_path, media_type=media_type)
+    response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
 
 
 @router.get("/players", response_model=list[WorkspacePlayerRead])
@@ -1852,6 +1993,8 @@ def update_collection(
 @router.delete("/collections/{collection_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_collection(
     collection_id: int,
+    remove_allocations: bool = Query(default=False),
+    allocation_signature: str | None = Query(default=None),
     db: Session = Depends(get_user_data_db),
 ) -> None:
     collection = db.get(Collection, collection_id)
@@ -1869,18 +2012,20 @@ def delete_collection(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Cannot delete the only collection",
         )
-    if (
-        db.scalar(
-            select(CollectionItem.id)
-            .join(DeckItem, DeckItem.collection_item_id == CollectionItem.id)
-            .where(CollectionItem.collection_id == collection.id)
-            .limit(1)
-        )
-        is not None
-    ):
+    allocation_summary, current_allocation_signature = _collection_allocation_summary(db, collection.id)
+    if allocation_summary and not remove_allocations:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Collection contains cards allocated to a deck",
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "message": "Collection contains cards allocated to decks",
+                "allocation_signature": current_allocation_signature,
+                "items": allocation_summary,
+            },
+        )
+    if allocation_summary and allocation_signature != current_allocation_signature:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Deck allocations changed. Refresh the collection and try again.",
         )
     replacement = None
     if collection.is_default:
@@ -1898,6 +2043,16 @@ def delete_collection(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Cannot delete the only regular collection",
             )
+    if remove_allocations:
+        deck_items = list(
+            db.scalars(
+                select(DeckItem)
+                .join(CollectionItem, CollectionItem.id == DeckItem.collection_item_id)
+                .where(CollectionItem.collection_id == collection.id)
+            )
+        )
+        for deck_item in deck_items:
+            db.delete(deck_item)
     db.delete(collection)
     db.flush()
     if replacement is not None:
@@ -1939,15 +2094,17 @@ def get_printing_details(
 ) -> CardDetailsRead:
     printing = _required_printing(printing_id)
     requested_language_code = language_code or printing["language_code"]
-    try:
-        card = scryfall.get_card_json(
-            printing["set_code"],
-            printing["collector_number"],
-            printing["language_code"],
-        )
+    card = scryfall.get_cached_card_json(
+        printing["set_code"],
+        printing["collector_number"],
+        printing["language_code"],
+    )
+    if card is None:
+        card = scryfall.get_cached_card_json_by_scryfall_id(printing["scryfall_id"])
+    if card is not None:
         card = _localized_card_details(printing_id, card, requested_language_code)
-    except Exception as error:
-        raise _scryfall_error(error) from error
+    else:
+        card = _catalog_card_details(printing, requested_language_code)
     language_query = f"?language_code={requested_language_code}"
     return CardDetailsRead(
         printing_id=printing_id,
@@ -1976,7 +2133,7 @@ def get_printing_image(
     )
     if cached_image is not None:
         image_path, media_type = cached_image
-        return FileResponse(image_path, media_type=media_type)
+        return _card_image_response(image_path, media_type)
     requested_language_code = language_code or printing["language_code"]
     try:
         card = scryfall.get_card_json_for_image(
@@ -1999,9 +2156,9 @@ def get_printing_image(
         )
         if cached_oracle_image is not None:
             image_path, media_type = cached_oracle_image
-            return FileResponse(image_path, media_type=media_type)
+            return _card_image_response(image_path, media_type)
         raise _scryfall_error(error) from error
-    return FileResponse(image_path, media_type=media_type)
+    return _card_image_response(image_path, media_type)
 
 
 @router.get(
@@ -2022,7 +2179,7 @@ def list_collection_items(
         .where(CollectionItem.collection_id == collection_id)
         .order_by(CollectionItem.created_at.desc(), CollectionItem.id.desc())
     )
-    return _items_read(list(items))
+    return _items_read(db, list(items))
 
 
 @router.post(
@@ -2062,7 +2219,7 @@ def add_collection_item(
         item.quantity += payload.quantity
     db.commit()
     db.refresh(item)
-    return _item_read(item)
+    return _item_read(db, item)
 
 
 @router.patch(
@@ -2079,6 +2236,160 @@ def update_collection_item(
     if item is None or item.collection_id != collection_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection item not found")
     scryfall_id, selected_language_code = _validated_item_identity(payload)
+    deck_items = list(
+        db.scalars(
+            select(DeckItem)
+            .where(DeckItem.collection_item_id == item.id)
+            .order_by(DeckItem.id)
+        )
+    )
+    allocated_quantity = sum(deck_item.quantity for deck_item in deck_items)
+    identity_changed = any(
+        (
+            item.scryfall_id != scryfall_id,
+            item.finish_id != payload.finish_id,
+            item.language_code != selected_language_code,
+            item.condition_code != payload.condition_code,
+        )
+    )
+    allocation_signature = "|".join(
+        f"{deck_item.id}:{deck_item.quantity}"
+        for deck_item in sorted(deck_items, key=lambda deck_item: deck_item.id)
+    )
+    if identity_changed:
+        if payload.quantity != item.quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Save quantity changes separately before changing card attributes.",
+            )
+        if payload.attribute_update is None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Select copies to update",
+            )
+        if (
+            payload.attribute_update.source_quantity != item.quantity
+            or payload.attribute_update.allocation_signature != allocation_signature
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Card copies changed. Refresh the collection and try again.",
+            )
+        selection_quantities: dict[int, int] = {}
+        for selection in payload.attribute_update.allocation_selections:
+            selection_quantities[selection.deck_item_id] = (
+                selection_quantities.get(selection.deck_item_id, 0) + selection.quantity
+            )
+        selected_allocated_quantity = sum(selection_quantities.values())
+        selected_available_quantity = payload.attribute_update.available_quantity
+        available_quantity = max(0, item.quantity - allocated_quantity)
+        selected_quantity = selected_available_quantity + selected_allocated_quantity
+        if selected_quantity < 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Select at least 1 copy to update.",
+            )
+        if selected_available_quantity > available_quantity or selected_quantity > item.quantity:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Card copies changed. Refresh the collection and try again.",
+            )
+        deck_items_by_id = {deck_item.id: deck_item for deck_item in deck_items}
+        stale_copies_error = HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Card copies changed. Refresh the collection and try again.",
+        )
+        for deck_item_id, quantity in selection_quantities.items():
+            deck_item = deck_items_by_id.get(deck_item_id)
+            if deck_item is None or quantity > deck_item.quantity:
+                raise stale_copies_error
+        target_item = db.scalar(
+            select(CollectionItem).where(
+                CollectionItem.collection_id == collection_id,
+                CollectionItem.id != item.id,
+                CollectionItem.scryfall_id == scryfall_id,
+                CollectionItem.finish_id == payload.finish_id,
+                CollectionItem.language_code == selected_language_code,
+                CollectionItem.condition_code == payload.condition_code,
+            )
+        )
+        if target_item is None:
+            target_item = CollectionItem(
+                collection_id=collection_id,
+                scryfall_id=scryfall_id,
+                finish_id=payload.finish_id,
+                language_code=selected_language_code,
+                condition_code=payload.condition_code,
+                quantity=selected_quantity,
+                created_at=int(time()),
+            )
+            db.add(target_item)
+            db.flush()
+        else:
+            target_item.quantity += selected_quantity
+        for deck_item_id, quantity in selection_quantities.items():
+            deck_item = deck_items_by_id[deck_item_id]
+            target_deck_item = db.scalar(
+                select(DeckItem).where(
+                    DeckItem.deck_id == deck_item.deck_id,
+                    DeckItem.collection_item_id == target_item.id,
+                    DeckItem.section == deck_item.section,
+                )
+            )
+            if quantity == deck_item.quantity:
+                if target_deck_item is None:
+                    deck_item.collection_item_id = target_item.id
+                else:
+                    target_deck_item.quantity += quantity
+                    db.delete(deck_item)
+            else:
+                deck_item.quantity -= quantity
+                if target_deck_item is None:
+                    db.add(
+                        DeckItem(
+                            deck_id=deck_item.deck_id,
+                            collection_item_id=target_item.id,
+                            section=deck_item.section,
+                            quantity=quantity,
+                        )
+                    )
+                else:
+                    target_deck_item.quantity += quantity
+        remaining_source_quantity = item.quantity - selected_quantity
+        if remaining_source_quantity == 0:
+            db.flush()
+            db.delete(item)
+            response_item = target_item
+        else:
+            item.quantity = remaining_source_quantity
+            response_item = item
+        db.commit()
+        db.refresh(response_item)
+        return _item_read(db, response_item)
+    removal_quantities: dict[int, int] = {}
+    for removal in payload.allocation_removals:
+        removal_quantities[removal.deck_item_id] = (
+            removal_quantities.get(removal.deck_item_id, 0) + removal.quantity
+        )
+    selected_removals = sum(removal_quantities.values())
+    required_removals = max(0, allocated_quantity - payload.quantity)
+    if selected_removals != required_removals:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Select exactly {required_removals} allocated copies to remove",
+        )
+    deck_items_by_id = {deck_item.id: deck_item for deck_item in deck_items}
+    stale_allocations_error = HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail="Deck allocations changed. Refresh the collection and try again.",
+    )
+    for deck_item_id, quantity in removal_quantities.items():
+        deck_item = deck_items_by_id.get(deck_item_id)
+        if deck_item is None or quantity > deck_item.quantity:
+            raise stale_allocations_error
+        deck_item.quantity -= quantity
+        if deck_item.quantity == 0:
+            db.delete(deck_item)
     matching_item = db.scalar(
         select(CollectionItem).where(
             CollectionItem.collection_id == collection_id,
@@ -2101,7 +2412,7 @@ def update_collection_item(
         item = matching_item
     db.commit()
     db.refresh(item)
-    return _item_read(item)
+    return _item_read(db, item)
 
 
 @router.delete(
@@ -2111,10 +2422,19 @@ def update_collection_item(
 def delete_collection_item(
     collection_id: int,
     item_id: int,
+    remove_allocations: bool = Query(default=False),
     db: Session = Depends(get_user_data_db),
 ) -> None:
     item = db.get(CollectionItem, item_id)
     if item is None or item.collection_id != collection_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection item not found")
+    deck_items = list(db.scalars(select(DeckItem).where(DeckItem.collection_item_id == item.id)))
+    if deck_items and not remove_allocations:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Collection item is allocated to decks",
+        )
+    for deck_item in deck_items:
+        db.delete(deck_item)
     db.delete(item)
     db.commit()

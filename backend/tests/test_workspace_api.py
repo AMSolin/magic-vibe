@@ -481,7 +481,13 @@ def test_workspace_physical_deck_inventory_search_and_add(
     assert updated_search.json()[0]["total_owned"] == 2
     assert updated_search.json()[0]["total_available"] == 0
     assert updated_search.json()[0]["items"][0]["allocations"] == [
-        {"deck_id": deck["id"], "deck_name": "Physical deck", "section": "main", "quantity": 2}
+        {
+            "deck_item_id": added.json()["id"],
+            "deck_id": deck["id"],
+            "deck_name": "Physical deck",
+            "section": "main",
+            "quantity": 2,
+        }
     ]
     assert oracle_search.status_code == 200
     assert oracle_search.json()[0]["oracle_id"] == ORACLE_ID
@@ -925,6 +931,241 @@ def test_workspace_repeated_add_merges_quantity(workspace_client: TestClient) ->
     assert second.json()["rarity"] == "common"
 
 
+def test_workspace_collection_items_include_available_quantity(
+    workspace_client: TestClient,
+) -> None:
+    created = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 2},
+    ).json()
+    deck = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Physical deck", "player_id": 1},
+    ).json()
+
+    before_allocation = workspace_client.get("/api/workspace/collections/1/items")
+    added = workspace_client.post(
+        f"/api/workspace/decks/{deck['id']}/items",
+        json={"collection_item_id": created["id"], "section": "main"},
+    )
+    after_allocation = workspace_client.get("/api/workspace/collections/1/items")
+
+    assert before_allocation.status_code == 200
+    assert before_allocation.json()[0]["quantity"] == 2
+    assert before_allocation.json()[0]["allocated_quantity"] == 0
+    assert before_allocation.json()[0]["available_quantity"] == 2
+    assert added.status_code == 201
+    assert after_allocation.status_code == 200
+    assert after_allocation.json()[0]["quantity"] == 2
+    assert after_allocation.json()[0]["allocated_quantity"] == 1
+    assert after_allocation.json()[0]["available_quantity"] == 1
+    assert after_allocation.json()[0]["allocations"] == [
+        {
+            "deck_item_id": added.json()["id"],
+            "deck_id": deck["id"],
+            "deck_name": "Physical deck",
+            "section": "main",
+            "quantity": 1,
+        }
+    ]
+
+
+def test_workspace_collection_item_update_rejects_identity_change_when_allocated(
+    workspace_client: TestClient,
+) -> None:
+    created = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 1},
+    ).json()
+    deck = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Physical deck", "player_id": 1},
+    ).json()
+    workspace_client.post(
+        f"/api/workspace/decks/{deck['id']}/items",
+        json={"collection_item_id": created["id"], "section": "main"},
+    )
+
+    response = workspace_client.patch(
+        f"/api/workspace/collections/1/items/{created['id']}",
+        json={
+            "printing_id": 1,
+            "finish_id": 0,
+            "language_code": "en",
+            "condition_code": "SP",
+            "quantity": 1,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Select copies to update"
+
+
+def test_workspace_collection_item_update_requires_exact_allocation_removals(
+    workspace_client: TestClient,
+) -> None:
+    created = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 3},
+    ).json()
+    deck = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Physical deck", "player_id": 1},
+    ).json()
+    deck_item = workspace_client.post(
+        f"/api/workspace/decks/{deck['id']}/items",
+        json={"collection_item_id": created["id"], "section": "main", "quantity": 2},
+    ).json()
+
+    missing_removals = workspace_client.patch(
+        f"/api/workspace/collections/1/items/{created['id']}",
+        json={
+            "printing_id": 1,
+            "finish_id": 0,
+            "language_code": "en",
+            "condition_code": "NM",
+            "quantity": 1,
+        },
+    )
+    updated = workspace_client.patch(
+        f"/api/workspace/collections/1/items/{created['id']}",
+        json={
+            "printing_id": 1,
+            "finish_id": 0,
+            "language_code": "en",
+            "condition_code": "NM",
+            "quantity": 1,
+            "allocation_removals": [{"deck_item_id": deck_item["id"], "quantity": 1}],
+        },
+    )
+    deck_items = workspace_client.get(f"/api/workspace/decks/{deck['id']}/items")
+
+    assert missing_removals.status_code == 400
+    assert missing_removals.json()["detail"] == "Select exactly 1 allocated copies to remove"
+    assert updated.status_code == 200
+    assert updated.json()["quantity"] == 1
+    assert updated.json()["allocated_quantity"] == 1
+    assert updated.json()["available_quantity"] == 0
+    assert deck_items.status_code == 200
+    assert deck_items.json()[0]["quantity"] == 1
+
+
+def test_workspace_collection_item_delete_requires_allocation_confirmation(
+    workspace_client: TestClient,
+) -> None:
+    created = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 1},
+    ).json()
+    deck = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Physical deck", "player_id": 1},
+    ).json()
+    workspace_client.post(
+        f"/api/workspace/decks/{deck['id']}/items",
+        json={"collection_item_id": created["id"], "section": "main"},
+    )
+
+    rejected = workspace_client.delete(f"/api/workspace/collections/1/items/{created['id']}")
+    deleted = workspace_client.delete(
+        f"/api/workspace/collections/1/items/{created['id']}",
+        params={"remove_allocations": "true"},
+    )
+    deck_items = workspace_client.get(f"/api/workspace/decks/{deck['id']}/items")
+    collection_items = workspace_client.get("/api/workspace/collections/1/items")
+
+    assert rejected.status_code == 400
+    assert rejected.json()["detail"] == "Collection item is allocated to decks"
+    assert deleted.status_code == 204
+    assert deck_items.status_code == 200
+    assert deck_items.json() == []
+    assert collection_items.status_code == 200
+    assert collection_items.json() == []
+
+
+def test_workspace_collection_delete_requires_allocation_confirmation(
+    workspace_client: TestClient,
+) -> None:
+    created = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 2},
+    ).json()
+    second_collection = workspace_client.post(
+        "/api/workspace/collections",
+        json={"name": "Second collection", "player_id": 1},
+    ).json()
+    deck = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Physical deck", "player_id": 1},
+    ).json()
+    deck_item = workspace_client.post(
+        f"/api/workspace/decks/{deck['id']}/items",
+        json={"collection_item_id": created["id"], "section": "main"},
+    ).json()
+
+    rejected = workspace_client.delete("/api/workspace/collections/1")
+    detail = rejected.json()["detail"]
+    stale = workspace_client.delete(
+        "/api/workspace/collections/1",
+        params={"remove_allocations": "true", "allocation_signature": "stale"},
+    )
+    deleted = workspace_client.delete(
+        "/api/workspace/collections/1",
+        params={
+            "remove_allocations": "true",
+            "allocation_signature": detail["allocation_signature"],
+        },
+    )
+    deck_items = workspace_client.get(f"/api/workspace/decks/{deck['id']}/items")
+    collections = workspace_client.get("/api/workspace/collections")
+
+    assert second_collection["id"] != 1
+    assert rejected.status_code == 409
+    assert detail["message"] == "Collection contains cards allocated to decks"
+    assert detail["allocation_signature"] == f"{deck_item['id']}:1"
+    assert detail["items"] == [
+        {
+            "collection_item_id": created["id"],
+            "name": "Swamp",
+            "allocations": [
+                {
+                    "deck_item_id": deck_item["id"],
+                    "deck_id": deck["id"],
+                    "deck_name": "Physical deck",
+                    "section": "main",
+                    "quantity": 1,
+                }
+            ],
+        }
+    ]
+    assert stale.status_code == 409
+    assert stale.json()["detail"] == "Deck allocations changed. Refresh the collection and try again."
+    assert deleted.status_code == 204
+    assert deck_items.status_code == 200
+    assert deck_items.json() == []
+    assert collections.status_code == 200
+    assert [collection["id"] for collection in collections.json()] == [second_collection["id"]]
+    assert collections.json()[0]["is_default"] is True
+
+
+def test_workspace_collection_items_are_ordered_by_name(
+    workspace_client: TestClient,
+) -> None:
+    workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 1},
+    )
+    workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 2, "finish_id": 0, "condition_code": "NM", "quantity": 1},
+    )
+
+    response = workspace_client.get("/api/workspace/collections/1/items")
+
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()] == ["Garden Charm", "Swamp"]
+
+
 def test_workspace_add_uses_selected_localization(workspace_client: TestClient) -> None:
     response = workspace_client.post(
         "/api/workspace/collections/1/items",
@@ -987,13 +1228,141 @@ def test_workspace_update_collection_item(workspace_client: TestClient) -> None:
 
     response = workspace_client.patch(
         f"/api/workspace/collections/1/items/{created['id']}",
-        json={"printing_id": 1, "finish_id": 1, "condition_code": "NM", "quantity": 3},
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 3},
     )
 
     assert response.status_code == 200
     assert response.json()["id"] == created["id"]
-    assert response.json()["finish"] == "foil"
     assert response.json()["quantity"] == 3
+
+
+def test_workspace_update_collection_item_changes_selected_available_copies(
+    workspace_client: TestClient,
+) -> None:
+    created = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 3},
+    ).json()
+
+    response = workspace_client.patch(
+        f"/api/workspace/collections/1/items/{created['id']}",
+        json={
+            "printing_id": 1,
+            "finish_id": 1,
+            "condition_code": "NM",
+            "quantity": 3,
+            "attribute_update": {
+                "available_quantity": 2,
+                "allocation_selections": [],
+                "source_quantity": 3,
+                "allocation_signature": "",
+            },
+        },
+    )
+    items = workspace_client.get("/api/workspace/collections/1/items").json()
+
+    assert response.status_code == 200
+    assert response.json()["id"] == created["id"]
+    assert response.json()["quantity"] == 1
+    assert sorted((item["finish"], item["quantity"]) for item in items) == [
+        ("foil", 2),
+        ("nonfoil", 1),
+    ]
+
+
+def test_workspace_update_collection_item_changes_selected_allocated_copy(
+    workspace_client: TestClient,
+) -> None:
+    source = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 2},
+    ).json()
+    target = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 1, "condition_code": "NM", "quantity": 1},
+    ).json()
+    deck = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Physical deck", "player_id": 1},
+    ).json()
+    deck_item = workspace_client.post(
+        f"/api/workspace/decks/{deck['id']}/items",
+        json={"collection_item_id": source["id"], "section": "main", "quantity": 2},
+    ).json()
+
+    response = workspace_client.patch(
+        f"/api/workspace/collections/1/items/{source['id']}",
+        json={
+            "printing_id": 1,
+            "finish_id": 1,
+            "condition_code": "NM",
+            "quantity": 2,
+            "attribute_update": {
+                "available_quantity": 0,
+                "allocation_selections": [{"deck_item_id": deck_item["id"], "quantity": 1}],
+                "source_quantity": 2,
+                "allocation_signature": f"{deck_item['id']}:2",
+            },
+        },
+    )
+    items = workspace_client.get("/api/workspace/collections/1/items").json()
+    deck_items = workspace_client.get(f"/api/workspace/decks/{deck['id']}/items").json()
+
+    assert response.status_code == 200
+    assert response.json()["id"] == source["id"]
+    assert sorted((item["id"], item["finish"], item["quantity"]) for item in items) == [
+        (source["id"], "nonfoil", 1),
+        (target["id"], "foil", 2),
+    ]
+    assert sorted((item["collection_item_id"], item["quantity"]) for item in deck_items) == [
+        (source["id"], 1),
+        (target["id"], 1),
+    ]
+
+
+def test_workspace_update_collection_item_changes_all_allocated_copies_to_new_identity(
+    workspace_client: TestClient,
+) -> None:
+    source = workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 1, "condition_code": "NM", "quantity": 2},
+    ).json()
+    deck = workspace_client.post(
+        "/api/workspace/decks",
+        json={"name": "Physical deck", "player_id": 1},
+    ).json()
+    deck_item = workspace_client.post(
+        f"/api/workspace/decks/{deck['id']}/items",
+        json={"collection_item_id": source["id"], "section": "main", "quantity": 2},
+    ).json()
+
+    response = workspace_client.patch(
+        f"/api/workspace/collections/1/items/{source['id']}",
+        json={
+            "printing_id": 1,
+            "finish_id": 1,
+            "condition_code": "SP",
+            "quantity": 2,
+            "attribute_update": {
+                "available_quantity": 0,
+                "allocation_selections": [{"deck_item_id": deck_item["id"], "quantity": 2}],
+                "source_quantity": 2,
+                "allocation_signature": f"{deck_item['id']}:2",
+            },
+        },
+    )
+    items = workspace_client.get("/api/workspace/collections/1/items").json()
+    deck_items = workspace_client.get(f"/api/workspace/decks/{deck['id']}/items").json()
+
+    assert response.status_code == 200
+    assert response.json()["id"] != source["id"]
+    assert response.json()["condition_code"] == "SP"
+    assert response.json()["quantity"] == 2
+    assert [(item["id"], item["condition_code"], item["quantity"]) for item in items] == [
+        (response.json()["id"], "SP", 2)
+    ]
+    assert deck_items[0]["collection_item_id"] == response.json()["id"]
+    assert deck_items[0]["quantity"] == 2
 
 
 def test_workspace_update_merges_identity_collision(workspace_client: TestClient) -> None:
@@ -1008,13 +1377,24 @@ def test_workspace_update_merges_identity_collision(workspace_client: TestClient
 
     response = workspace_client.patch(
         f"/api/workspace/collections/1/items/{foil['id']}",
-        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 4},
+        json={
+            "printing_id": 1,
+            "finish_id": 0,
+            "condition_code": "NM",
+            "quantity": 3,
+            "attribute_update": {
+                "available_quantity": 3,
+                "allocation_selections": [],
+                "source_quantity": 3,
+                "allocation_signature": "",
+            },
+        },
     )
     items = workspace_client.get("/api/workspace/collections/1/items").json()
 
     assert response.status_code == 200
     assert response.json()["id"] == nonfoil["id"]
-    assert response.json()["quantity"] == 6
+    assert response.json()["quantity"] == 5
     assert [item["id"] for item in items] == [nonfoil["id"]]
 
 
@@ -1077,22 +1457,45 @@ def test_workspace_printing_details_use_catalog_localization(
     assert card["printed_text"] == "({T}: \u0414\u043e\u0431\u0430\u0432\u044c\u0442\u0435 {B}.)"
 
 
-def test_workspace_printing_details_hide_raw_scryfall_network_error(
+def test_workspace_printing_details_use_catalog_without_scryfall_request(
     workspace_client: TestClient,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         scryfall,
         "get_card_json",
-        lambda *args: (_ for _ in ()).throw(URLError("connection refused")),
+        lambda *args: (_ for _ in ()).throw(AssertionError("Scryfall should not be requested")),
     )
+    monkeypatch.setattr(scryfall, "get_cached_card_json", lambda *args: None)
+    monkeypatch.setattr(scryfall, "get_cached_card_json_by_scryfall_id", lambda _scryfall_id: None)
 
     response = workspace_client.get("/api/workspace/printings/1/details?language_code=en")
 
-    assert response.status_code == 503
-    assert response.json()["detail"] == (
-        "Scryfall is unavailable. Try again later or use already cached card data."
+    assert response.status_code == 200
+    card = response.json()["card"]
+    assert card["name"] == "Swamp"
+    assert card["printed_text"] == "({T}: Add {B}.)"
+
+
+def test_workspace_printing_details_use_catalog_when_json_is_not_cached(
+    workspace_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        scryfall,
+        "get_card_json",
+        lambda *args: (_ for _ in ()).throw(AssertionError("Scryfall should not be requested")),
     )
+    monkeypatch.setattr(scryfall, "get_cached_card_json", lambda *args: None)
+    monkeypatch.setattr(scryfall, "get_cached_card_json_by_scryfall_id", lambda _scryfall_id: None)
+
+    response = workspace_client.get("/api/workspace/printings/1/details?language_code=en")
+
+    assert response.status_code == 200
+    card = response.json()["card"]
+    assert card["name"] == "Swamp"
+    assert card["printed_name"] == "Swamp"
+    assert card["printed_text"] == "({T}: Add {B}.)"
 
 
 def test_scryfall_json_and_image_are_cached(

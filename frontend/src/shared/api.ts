@@ -47,6 +47,18 @@ export type WorkspaceCollection = {
   created_at: number;
 };
 
+export type WorkspaceCollectionAllocationSummary = {
+  collection_item_id: number;
+  name: string;
+  allocations: WorkspaceDeckInventoryAllocation[];
+};
+
+export type WorkspaceCollectionAllocationDeleteDetail = {
+  message: string;
+  allocation_signature: string;
+  items: WorkspaceCollectionAllocationSummary[];
+};
+
 export type WorkspacePlayer = {
   id: number;
   name: string;
@@ -97,6 +109,7 @@ export type WorkspaceDeckItem = {
 };
 
 export type WorkspaceDeckInventoryAllocation = {
+  deck_item_id: number;
   deck_id: number;
   deck_name: string;
   section: string;
@@ -269,6 +282,9 @@ export type WorkspaceCollectionItem = {
   finish: string;
   condition_code: string;
   quantity: number;
+  allocated_quantity: number;
+  available_quantity: number;
+  allocations: WorkspaceDeckInventoryAllocation[];
   mana_cost: string;
   type: string;
 };
@@ -281,6 +297,7 @@ export class ApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly detail?: unknown,
   ) {
     super(message);
     this.name = 'ApiError';
@@ -305,6 +322,10 @@ function formatApiErrorDetail(detail: unknown): string | null {
     return messages.length > 0 ? messages.join('; ') : null;
   }
 
+  if (typeof detail === 'object' && detail !== null && 'message' in detail) {
+    return String(detail.message);
+  }
+
   return null;
 }
 
@@ -320,14 +341,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     let detail: string | null = null;
+    let rawDetail: unknown;
     try {
       const body = (await response.json()) as ApiErrorBody;
+      rawDetail = body.detail;
       detail = formatApiErrorDetail(body.detail);
     } catch {
       // Fall back to the HTTP status when the response body is not JSON.
     }
 
-    throw new ApiError(detail ?? `API request failed: ${response.status}`, response.status);
+    throw new ApiError(detail ?? `API request failed: ${response.status}`, response.status, rawDetail);
   }
 
   if (response.status === 204) {
@@ -345,14 +368,16 @@ async function requestResponse(path: string, init?: RequestInit): Promise<Respon
 
   if (!response.ok) {
     let detail: string | null = null;
+    let rawDetail: unknown;
     try {
       const body = (await response.json()) as ApiErrorBody;
+      rawDetail = body.detail;
       detail = formatApiErrorDetail(body.detail);
     } catch {
       // Fall back to the HTTP status when the response body is not JSON.
     }
 
-    throw new ApiError(detail ?? `API request failed: ${response.status}`, response.status);
+    throw new ApiError(detail ?? `API request failed: ${response.status}`, response.status, rawDetail);
   }
 
   return response;
@@ -577,8 +602,19 @@ export function updateWorkspaceCollection(
   });
 }
 
-export function deleteWorkspaceCollection(collectionId: number): Promise<void> {
-  return request<void>(`/api/workspace/collections/${collectionId}`, {
+export function deleteWorkspaceCollection(
+  collectionId: number,
+  options: { remove_allocations?: boolean; allocation_signature?: string } = {},
+): Promise<void> {
+  const params = new URLSearchParams();
+  if (options.remove_allocations) {
+    params.set('remove_allocations', 'true');
+  }
+  if (options.allocation_signature) {
+    params.set('allocation_signature', options.allocation_signature);
+  }
+  const query = params.toString();
+  return request<void>(`/api/workspace/collections/${collectionId}${query ? `?${query}` : ''}`, {
     method: 'DELETE',
   });
 }
@@ -639,6 +675,13 @@ export function updateWorkspaceCollectionItem(
     language_code: string;
     condition_code: string;
     quantity: number;
+    allocation_removals?: { deck_item_id: number; quantity: number }[];
+    attribute_update?: {
+      available_quantity: number;
+      allocation_selections: { deck_item_id: number; quantity: number }[];
+      source_quantity: number;
+      allocation_signature: string;
+    };
   },
 ): Promise<WorkspaceCollectionItem> {
   return request<WorkspaceCollectionItem>(
@@ -650,8 +693,17 @@ export function updateWorkspaceCollectionItem(
   );
 }
 
-export function deleteWorkspaceCollectionItem(collectionId: number, itemId: number): Promise<void> {
-  return request<void>(`/api/workspace/collections/${collectionId}/items/${itemId}`, {
+export function deleteWorkspaceCollectionItem(
+  collectionId: number,
+  itemId: number,
+  options: { remove_allocations?: boolean } = {},
+): Promise<void> {
+  const params = new URLSearchParams();
+  if (options.remove_allocations) {
+    params.set('remove_allocations', 'true');
+  }
+  const query = params.toString();
+  return request<void>(`/api/workspace/collections/${collectionId}/items/${itemId}${query ? `?${query}` : ''}`, {
     method: 'DELETE',
   });
 }
