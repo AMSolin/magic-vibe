@@ -16,7 +16,7 @@ from app.services.catalog_import import import_catalog_source
 
 ACTIVE_DOWNLOAD_STATUSES = ("pending", "downloading", "importing")
 CATALOG_SOURCE_NAME = "MTGJSON AllPrintings.sqlite.xz"
-HTTP_HEADERS = {"User-Agent": "MagicExplorer/0.1"}
+HTTP_HEADERS = {"User-Agent": "MagicVibe/0.1"}
 
 
 def _set_setting(db: Session, key: str, value: str) -> None:

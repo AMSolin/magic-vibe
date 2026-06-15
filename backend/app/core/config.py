@@ -2,7 +2,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
-    app_name: str = "Magic Explorer"
+    app_name: str = "Magic Vibe"
     app_database_url: str = "sqlite:///./data/app_data.db"
     user_database_url: str = "sqlite:///./data/user_data.db"
     catalog_source_url: str = "https://mtgjson.com/api/v5/AllPrintings.sqlite.xz"

@@ -3,7 +3,7 @@ import { ref, watch } from 'vue';
 import Button from 'primevue/button';
 import Menubar from 'primevue/menubar';
 
-const themeStorageKey = 'magic-explorer-theme';
+const themeStorageKey = 'magic-vibe-theme';
 const isDarkTheme = ref(localStorage.getItem(themeStorageKey) === 'dark');
 
 watch(
@@ -27,7 +27,7 @@ const items = [
   <div class="app-shell">
     <Menubar :model="items">
       <template #start>
-        <RouterLink class="brand" to="/">Magic Explorer</RouterLink>
+        <RouterLink class="brand" to="/">Magic Vibe</RouterLink>
       </template>
       <template #item="{ item, props }">
         <RouterLink v-if="item.route" v-slot="{ href, navigate }" :to="item.route" custom>

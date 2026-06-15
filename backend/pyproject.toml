@@ -1,7 +1,8 @@
 [project]
-name = "magic-explorer-backend"
+name = "magic-vibe-backend"
 version = "0.1.0"
-description = "FastAPI backend for Magic Explorer."
+description = "FastAPI backend for Magic Vibe."
+license = "MIT"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi[standard]>=0.115",

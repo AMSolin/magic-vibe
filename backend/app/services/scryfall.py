@@ -29,7 +29,7 @@ def _request_bytes(url: str, *, accept: str) -> tuple[bytes, str | None]:
         delay = _MIN_API_INTERVAL_SECONDS - (monotonic() - _last_api_request)
         if delay > 0:
             sleep(delay)
-        request = Request(url, headers={"Accept": accept, "User-Agent": "MagicExplorer/0.1"})
+        request = Request(url, headers={"Accept": accept, "User-Agent": "MagicVibe/0.1"})
         with urlopen(request, timeout=15) as response:
             content = response.read()
             content_type = response.headers.get_content_type()
