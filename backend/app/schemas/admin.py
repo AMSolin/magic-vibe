@@ -31,3 +31,16 @@ class ScryfallSymbolsStatusRead(BaseModel):
     exists: bool
     symbol_count: int
     updated_at: int | None
+
+
+class GeneratedTestCollectionRead(BaseModel):
+    id: int
+    name: str
+    language_code: str
+    rows: int
+    unique_scryfall_ids: int
+    total_quantity: int
+
+
+class GeneratedTestCollectionsRead(BaseModel):
+    collections: list[GeneratedTestCollectionRead]

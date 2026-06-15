@@ -1,5 +1,7 @@
 from collections.abc import Generator
 from pathlib import Path
+import sqlite3
+from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
@@ -9,8 +11,12 @@ from sqlalchemy.pool import StaticPool
 
 from app.db.app_data_base import AppDataBase
 from app.db.app_data_session import get_app_data_db
+from app.db.user_data_base import UserDataBase
+from app.db.user_data_session import get_user_data_db
 from app.main import app
 from app.models.app_data import APP_DATA_MODELS, AppSetting, CatalogImport
+from app.models.user_data import CardCondition, Player, USER_DATA_MODELS
+from app.services import catalog
 from app.services.catalog_download import CATALOG_SOURCE_NAME
 from app.services.catalog_import import LOCAL_CATALOG_SOURCE_NAME
 
@@ -33,6 +39,58 @@ def app_data_session() -> Generator[sessionmaker[Session]]:
     app.dependency_overrides[get_app_data_db] = override_get_app_data_db
     yield testing_session
     app.dependency_overrides.clear()
+
+
+def _create_test_collection_catalog(path: Path) -> None:
+    db = sqlite3.connect(path)
+    db.executescript(
+        """
+        create table sets (code text primary key, release_date integer);
+        create table card_printings (
+            id integer primary key, scryfall_id blob, oracle_id blob, set_code text,
+            collector_number text, language_code text, name text, rarity text, layout text
+        );
+        create table card_printing_finishes (printing_id integer, finish_id integer);
+        create table card_printing_faces (
+            id integer primary key, printing_id integer, face_order integer
+        );
+        create table card_face_localizations (
+            id integer primary key, face_id integer, language_code text
+        );
+        insert into sets values ('NEW', 1262304000);
+        insert into sets values ('OLD', 1262217600);
+        """
+    )
+    rows = [
+        (1, "40000000-0000-0000-0000-000000000001", "NEW", "en"),
+        (2, "40000000-0000-0000-0000-000000000002", "NEW", "en"),
+        (3, "40000000-0000-0000-0000-000000000003", "OLD", "en"),
+    ]
+    for printing_id, scryfall_id, set_code, language_code in rows:
+        db.execute(
+            """
+            insert into card_printings values (
+                ?, ?, ?, ?, ?, ?, ?, 'common', 'normal'
+            )
+            """,
+            (
+                printing_id,
+                UUID(scryfall_id).bytes,
+                UUID("50000000-0000-0000-0000-000000000001").bytes,
+                set_code,
+                str(printing_id),
+                language_code,
+                f"Card {printing_id}",
+            ),
+        )
+        db.execute("insert into card_printing_finishes values (?, 0)", (printing_id,))
+        db.execute(
+            "insert into card_printing_faces values (?, ?, 0)",
+            (printing_id, printing_id),
+        )
+    db.execute("insert into card_face_localizations values (1, 2, 'ru')")
+    db.commit()
+    db.close()
 
 
 def test_catalog_status_is_empty_before_first_import(
@@ -212,6 +270,61 @@ def test_user_data_recreate_initializes_database(
     assert response.json()["exists"] is True
     assert response.json()["file_size"] == len(b"user data")
     assert recreate_calls == [None]
+
+
+def test_generate_test_collections_is_idempotent(
+    app_data_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    _ = app_data_session, USER_DATA_MODELS
+    catalog_path = tmp_path / "catalog.db"
+    _create_test_collection_catalog(catalog_path)
+    monkeypatch.setattr(catalog.settings, "catalog_database_path", str(catalog_path))
+
+    engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    UserDataBase.metadata.create_all(bind=engine)
+    testing_session = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    with testing_session() as db:
+        db.add(Player(name="Player", is_default=True, created_at=1))
+        db.add(CardCondition(code="NM", name="Near Mint", sort_order=1))
+        db.commit()
+
+    def override_get_user_data_db() -> Generator[Session]:
+        with testing_session() as db:
+            yield db
+
+    app.dependency_overrides[get_user_data_db] = override_get_user_data_db
+
+    with TestClient(app) as client:
+        first = client.post("/api/admin/test-collections/generate")
+        second = client.post("/api/admin/test-collections/generate")
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json() == second.json()
+    assert first.json()["collections"] == [
+        {
+            "id": 1,
+            "name": "Test EN ALL unique printings 2010+",
+            "language_code": "en",
+            "rows": 2,
+            "unique_scryfall_ids": 2,
+            "total_quantity": 8,
+        },
+        {
+            "id": 2,
+            "name": "Test RU ALL localized printings 2010+",
+            "language_code": "ru",
+            "rows": 1,
+            "unique_scryfall_ids": 1,
+            "total_quantity": 4,
+        },
+    ]
 
 
 def test_scryfall_symbols_status_and_update(

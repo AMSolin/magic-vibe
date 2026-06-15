@@ -30,6 +30,19 @@ export type ScryfallSymbolsStatus = {
   updated_at: number | null;
 };
 
+export type GeneratedTestCollection = {
+  id: number;
+  name: string;
+  language_code: string;
+  rows: number;
+  unique_scryfall_ids: number;
+  total_quantity: number;
+};
+
+export type GeneratedTestCollections = {
+  collections: GeneratedTestCollection[];
+};
+
 export type ScryfallSymbol = {
   image_url: string;
   label: string;
@@ -433,6 +446,12 @@ export function getScryfallSymbolsStatus(): Promise<ScryfallSymbolsStatus> {
 
 export function updateScryfallSymbols(): Promise<ScryfallSymbolsStatus> {
   return request<ScryfallSymbolsStatus>('/api/admin/scryfall-symbols/update', {
+    method: 'POST',
+  });
+}
+
+export function generateAdminTestCollections(): Promise<GeneratedTestCollections> {
+  return request<GeneratedTestCollections>('/api/admin/test-collections/generate', {
     method: 'POST',
   });
 }

@@ -7,6 +7,8 @@ import ProgressSpinner from 'primevue/progressspinner';
 
 import {
   type CatalogImport,
+  generateAdminTestCollections,
+  type GeneratedTestCollection,
   getApiErrorMessage,
   getCatalogStatus,
   getScryfallSymbolsStatus,
@@ -27,6 +29,8 @@ const scryfallSymbolsStatus = ref<ScryfallSymbolsStatus | null>(null);
 const loading = ref(false);
 const recreatingUserData = ref(false);
 const updatingScryfallSymbols = ref(false);
+const generatingTestCollections = ref(false);
+const generatedTestCollections = ref<GeneratedTestCollection[]>([]);
 const userDataDialogVisible = ref(false);
 const error = ref<string | null>(null);
 const refreshError = ref<string | null>(null);
@@ -141,6 +145,20 @@ async function initializeUserData(): Promise<void> {
   }
 }
 
+async function generateTestCollections(): Promise<void> {
+  generatingTestCollections.value = true;
+  error.value = null;
+  try {
+    const result = await generateAdminTestCollections();
+    generatedTestCollections.value = result.collections;
+    userDataStatus.value = await getUserDataStatus();
+  } catch (caughtError) {
+    error.value = getApiErrorMessage(caughtError, 'Test collections could not be generated');
+  } finally {
+    generatingTestCollections.value = false;
+  }
+}
+
 async function updateCatalog(): Promise<void> {
   loading.value = true;
   error.value = null;
@@ -237,6 +255,41 @@ onUnmounted(() => {
             :label="userDataButtonLabel"
             severity="danger"
             @click="userDataDialogVisible = true"
+          />
+        </div>
+      </section>
+
+      <section class="tool-panel">
+        <div class="section-header">
+          <h2>Test Data</h2>
+        </div>
+
+        <Message severity="info">
+          Creates or refreshes the English and Russian 2010+ test collections from the installed
+          local catalog. Existing matching rows are reused and kept at least at quantity 4.
+        </Message>
+
+        <div v-if="generatedTestCollections.length" class="metadata-grid">
+          <div
+            v-for="collection in generatedTestCollections"
+            :key="collection.id"
+            class="field note-field"
+          >
+            <span>{{ collection.name }}</span>
+            <strong>
+              #{{ collection.id }} / {{ formatValue(collection.rows) }} rows /
+              {{ formatValue(collection.total_quantity) }} cards / {{ collection.language_code }}
+            </strong>
+          </div>
+        </div>
+
+        <div class="panel-actions">
+          <Button
+            icon="pi pi-clone"
+            label="Generate 2010+ test collections"
+            :loading="generatingTestCollections"
+            :disabled="!userDataStatus?.exists || !installedCatalog"
+            @click="generateTestCollections"
           />
         </div>
       </section>
