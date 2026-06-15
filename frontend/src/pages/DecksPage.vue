@@ -9,19 +9,25 @@ import Textarea from 'primevue/textarea';
 import ToggleSwitch from 'primevue/toggleswitch';
 
 import SearchFieldToggle from '@/components/SearchFieldToggle.vue';
+import ScryfallSymbolsText from '@/components/ScryfallSymbolsText.vue';
 import WorkspacePaginator from '@/components/WorkspacePaginator.vue';
 import {
   addWorkspaceDeckItem,
+  addWorkspaceWishDeckItem,
   createWorkspaceDeck,
   deleteWorkspaceDeck,
   deleteWorkspaceDeckItem,
+  deleteWorkspaceWishDeckItem,
   getApiErrorMessage,
   listWorkspaceDeckItems,
   listWorkspaceDecks,
   listWorkspacePlayers,
+  listWorkspaceWishDeckItems,
   searchWorkspaceDeckInventory,
+  searchWorkspaceWishDeckCards,
   updateWorkspaceDeckItem,
   updateWorkspaceDeck,
+  updateWorkspaceWishDeckItem,
 } from '@/shared/api';
 import type {
   WorkspaceDeck,
@@ -29,6 +35,8 @@ import type {
   WorkspaceDeckInventorySearchFilters,
   WorkspaceDeckInventorySearchResult,
   WorkspaceDeckItem,
+  WorkspaceWishDeckItem,
+  WorkspaceWishDeckSearchResult,
   WorkspacePlayer,
 } from '@/shared/api';
 import { loadScryfallSymbols, scryfallSymbols } from '@/shared/scryfallSymbols';
@@ -41,6 +49,7 @@ const HOVER_PREVIEW_WIDTH = Math.round(CARD_NORMAL_IMAGE_WIDTH * 0.75);
 const HOVER_PREVIEW_HEIGHT = Math.round(
   HOVER_PREVIEW_WIDTH * (CARD_NORMAL_IMAGE_HEIGHT / CARD_NORMAL_IMAGE_WIDTH),
 );
+const MAX_WISH_ADD_QUANTITY = 999;
 const COLORLESS_SYMBOL = String.fromCharCode(9671);
 const MANA_COLORS = ['W', 'U', 'B', 'R', 'G'] as const;
 const COLOR_MATCH_OPTIONS: {
@@ -81,13 +90,15 @@ type PreviewCandidate = {
   name: string;
 };
 
+type DeckListItem = WorkspaceDeckItem | WorkspaceWishDeckItem;
+
 type DeckSectionRow = {
   key: string;
   name: string;
   oracle_id: string;
   quantity: number;
   previewCandidate: PreviewCandidate | null;
-  items: WorkspaceDeckItem[];
+  items: DeckListItem[];
 };
 
 type RarityFilterOption = {
@@ -116,8 +127,9 @@ type InventoryAllocationGroup = {
 const sidebarCollapsed = ref(false);
 const decks = ref<WorkspaceDeck[]>([]);
 const players = ref<WorkspacePlayer[]>([]);
-const deckItems = ref<WorkspaceDeckItem[]>([]);
+const deckItems = ref<DeckListItem[]>([]);
 const searchResults = ref<WorkspaceDeckInventorySearchResult[]>([]);
+const wishSearchResults = ref<WorkspaceWishDeckSearchResult[]>([]);
 const searchResultFirst = ref(0);
 const searchResultRows = ref(50);
 const searchResultTotal = ref(0);
@@ -125,7 +137,8 @@ const searchResultTotalItems = ref(0);
 const expandedOracleIds = ref<Set<string>>(new Set());
 const expandedDecklistRowKeys = ref<Set<string>>(new Set());
 const expandedAllocationItemIds = ref<Set<number>>(new Set());
-const addingItemIds = ref<Set<number>>(new Set());
+const searchAddQuantities = ref<Record<string, number>>({});
+const addingItemIds = ref<Set<string | number>>(new Set());
 const editingDeckItemIds = ref<Set<number>>(new Set());
 const openMoveMenuItemId = ref<number | null>(null);
 const moveMenuDirection = ref<'up' | 'down'>('down');
@@ -188,7 +201,9 @@ const visibleSections = computed(() =>
 );
 const searchResultCount = computed(() => searchResultTotalItems.value);
 const hasSearchContext = computed(() =>
-  Boolean(searchQuery.value.trim() || oracleSearchContext.value || hasActiveDeckFilters.value),
+  selectedDeck.value?.is_wish
+    ? Boolean(searchQuery.value.trim() || hasActiveDeckFilters.value)
+    : Boolean(searchQuery.value.trim() || oracleSearchContext.value || hasActiveDeckFilters.value),
 );
 const hasActiveDeckFilters = computed(() =>
   Boolean(
@@ -201,13 +216,20 @@ const hasActiveDeckFilters = computed(() =>
   ),
 );
 const hasClearableDeckSearchContext = computed(() =>
-  Boolean(
-    searchQuery.value.trim() ||
-      searchField.value !== 'name' ||
-      colorMatchMode.value !== 'includes_all' ||
-      oracleSearchContext.value ||
-      hasActiveDeckFilters.value,
-  ),
+  selectedDeck.value?.is_wish
+    ? Boolean(
+        searchQuery.value.trim() ||
+          searchField.value !== 'name' ||
+          colorMatchMode.value !== 'includes_all' ||
+          hasActiveDeckFilters.value,
+      )
+    : Boolean(
+        searchQuery.value.trim() ||
+          searchField.value !== 'name' ||
+          colorMatchMode.value !== 'includes_all' ||
+          oracleSearchContext.value ||
+          hasActiveDeckFilters.value,
+      ),
 );
 const deckSearchFilters = computed<WorkspaceDeckInventorySearchFilters>(() => ({
   search_field: searchField.value,
@@ -352,7 +374,10 @@ function rowsForSection(section: string): DeckSectionRow[] {
 
 function currentDecklistRowKeys(): Set<string> {
   return new Set(
-    deckItems.value.map((item) => `${item.section}:${item.oracle_id || item.id}`),
+    deckItems.value.map((item) => {
+      const groupKey = item.oracle_id || item.id;
+      return `${item.section}:${groupKey}`;
+    }),
   );
 }
 
@@ -400,12 +425,35 @@ function deckItemDetails(item: WorkspaceDeckItem): string {
     .join(' / ');
 }
 
-function deckItemPreviewCandidate(item: WorkspaceDeckItem): PreviewCandidate | null {
+function isWishDeckItem(item: DeckListItem): item is WorkspaceWishDeckItem {
+  return 'linked_collection_item_id' in item;
+}
+
+function deckListItemDetails(item: DeckListItem): string {
+  if (isWishDeckItem(item)) {
+    return [item.language, item.type, item.mana_cost].filter(Boolean).join(' / ');
+  }
+  return deckItemDetails(item);
+}
+
+function deckItemPreviewCandidate(item: DeckListItem): PreviewCandidate | null {
   if (
     item.printing_id === null ||
     item.release_date === null ||
     item.language_code === null
   ) {
+    return null;
+  }
+  return {
+    printing_id: item.printing_id,
+    release_date: item.release_date,
+    language_code: item.language_code,
+    name: item.name,
+  };
+}
+
+function wishSearchPreviewCandidate(item: WorkspaceWishDeckSearchResult): PreviewCandidate | null {
+  if (item.printing_id === null || item.release_date === null) {
     return null;
   }
   return {
@@ -665,12 +713,63 @@ function resetDeckSearchFilters(): void {
   searchResultFirst.value = 0;
 }
 
-function isAddingItem(itemId: number): boolean {
+function isAddingItem(itemId: string | number): boolean {
   return addingItemIds.value.has(itemId);
+}
+
+function wishSearchQuantityKey(item: WorkspaceWishDeckSearchResult): string {
+  return `wish:${item.oracle_id}:${item.language_code}`;
+}
+
+function inventorySearchQuantityKey(item: WorkspaceDeckInventoryItem): string {
+  return `inventory:${item.collection_item_id}`;
+}
+
+function normalizedSearchAddQuantity(key: string, maxQuantity = MAX_WISH_ADD_QUANTITY): number {
+  const max = Math.max(1, Math.floor(maxQuantity));
+  const quantity = searchAddQuantities.value[key] ?? 1;
+  return Math.min(max, Math.max(1, Math.floor(quantity)));
+}
+
+function setSearchAddQuantity(key: string, value: string | number, maxQuantity = MAX_WISH_ADD_QUANTITY): void {
+  const parsedValue = typeof value === 'number' ? value : Number.parseInt(value, 10);
+  const nextValue = Number.isFinite(parsedValue) ? parsedValue : 1;
+  searchAddQuantities.value = {
+    ...searchAddQuantities.value,
+    [key]: normalizedSearchAddQuantityFromValue(nextValue, maxQuantity),
+  };
+}
+
+function normalizedSearchAddQuantityFromValue(value: number, maxQuantity = MAX_WISH_ADD_QUANTITY): number {
+  const max = Math.max(1, Math.floor(maxQuantity));
+  return Math.min(max, Math.max(1, Math.floor(value)));
+}
+
+function adjustSearchAddQuantity(key: string, delta: number, maxQuantity = MAX_WISH_ADD_QUANTITY): void {
+  setSearchAddQuantity(
+    key,
+    normalizedSearchAddQuantity(key, maxQuantity) + delta,
+    maxQuantity,
+  );
+}
+
+function updateSearchAddQuantityFromInput(
+  key: string,
+  event: Event,
+  maxQuantity = MAX_WISH_ADD_QUANTITY,
+): void {
+  const target = event.target;
+  if (target instanceof HTMLInputElement) {
+    setSearchAddQuantity(key, target.value, maxQuantity);
+  }
 }
 
 function isEditingDeckItem(itemId: number): boolean {
   return editingDeckItemIds.value.has(itemId);
+}
+
+function isEditingDecklistRow(row: DeckSectionRow): boolean {
+  return row.items.some((item) => isEditingDeckItem(item.id));
 }
 
 function moveTargetSections(currentSection: string): string[] {
@@ -817,6 +916,7 @@ function selectDeck(deckId: number): void {
   oracleSearchContext.value = null;
   resetDeckSearchFilters();
   searchResults.value = [];
+  wishSearchResults.value = [];
   searchResultTotal.value = 0;
   searchResultTotalItems.value = 0;
   expandedOracleIds.value = new Set();
@@ -838,7 +938,12 @@ async function refreshDeckItems(): Promise<void> {
     expandedDecklistRowKeys.value = new Set();
     return;
   }
-  deckItems.value = await listWorkspaceDeckItems(selectedDeckId.value);
+  const deck = selectedDeck.value;
+  if (deck?.is_wish) {
+    deckItems.value = await listWorkspaceWishDeckItems(selectedDeckId.value);
+  } else {
+    deckItems.value = await listWorkspaceDeckItems(selectedDeckId.value);
+  }
   const currentKeys = currentDecklistRowKeys();
   expandedDecklistRowKeys.value = new Set(
     [...expandedDecklistRowKeys.value].filter((key) => currentKeys.has(key)),
@@ -850,8 +955,17 @@ async function refreshSearchResults(): Promise<void> {
   const query = searchQuery.value.trim();
   const oracleId = oracleSearchContext.value?.oracleId;
   const requestId = ++searchRequestId;
-  if (!deck || deck.is_wish || (!query && !oracleId && !hasActiveDeckFilters.value)) {
+  if (!deck || (!deck.is_wish && !query && !oracleId && !hasActiveDeckFilters.value)) {
     searchResults.value = [];
+    wishSearchResults.value = [];
+    searchResultTotal.value = 0;
+    searchResultTotalItems.value = 0;
+    searchLoading.value = false;
+    return;
+  }
+  if (deck.is_wish && !query && !hasActiveDeckFilters.value) {
+    searchResults.value = [];
+    wishSearchResults.value = [];
     searchResultTotal.value = 0;
     searchResultTotalItems.value = 0;
     searchLoading.value = false;
@@ -859,26 +973,43 @@ async function refreshSearchResults(): Promise<void> {
   }
   searchLoading.value = true;
   try {
-    const page = await searchWorkspaceDeckInventory(
-      deck.id,
-      query,
-      oracleId,
-      deckSearchFilters.value,
-      { offset: searchResultFirst.value, limit: searchResultRows.value },
-    );
+    const page = deck.is_wish
+      ? await searchWorkspaceWishDeckCards(
+          deck.id,
+          query,
+          deckSearchFilters.value,
+          { offset: searchResultFirst.value, limit: searchResultRows.value },
+        )
+      : await searchWorkspaceDeckInventory(
+          deck.id,
+          query,
+          oracleId,
+          deckSearchFilters.value,
+          { offset: searchResultFirst.value, limit: searchResultRows.value },
+        );
     if (requestId === searchRequestId) {
       error.value = '';
-      searchResults.value = page.results;
+      if (deck.is_wish) {
+        wishSearchResults.value = page.results as WorkspaceWishDeckSearchResult[];
+        searchResults.value = [];
+      } else {
+        searchResults.value = page.results as WorkspaceDeckInventorySearchResult[];
+        wishSearchResults.value = [];
+      }
       searchResultTotal.value = page.total_count;
       searchResultTotalItems.value = page.total_items;
-      if (oracleId) {
+      if (!deck.is_wish && oracleId) {
         expandedOracleIds.value = new Set(page.results.map((result) => result.oracle_id));
       }
     }
   } catch (requestError) {
     if (requestId === searchRequestId) {
-      error.value = getApiErrorMessage(requestError, 'Deck inventory search is unavailable');
+      error.value = getApiErrorMessage(
+        requestError,
+        deck.is_wish ? 'Wish deck search is unavailable' : 'Deck inventory search is unavailable',
+      );
       searchResults.value = [];
+      wishSearchResults.value = [];
       searchResultTotal.value = 0;
       searchResultTotalItems.value = 0;
     }
@@ -1023,6 +1154,8 @@ async function addInventoryItemToDeck(item: WorkspaceDeckInventoryItem): Promise
   if (!deck || item.available_quantity <= 0) {
     return;
   }
+  const quantityKey = inventorySearchQuantityKey(item);
+  const quantity = normalizedSearchAddQuantity(quantityKey, item.available_quantity);
   const nextAdding = new Set(addingItemIds.value);
   nextAdding.add(item.collection_item_id);
   addingItemIds.value = nextAdding;
@@ -1032,8 +1165,9 @@ async function addInventoryItemToDeck(item: WorkspaceDeckInventoryItem): Promise
     const addedItem = await addWorkspaceDeckItem(deck.id, {
       collection_item_id: item.collection_item_id,
       section: 'main',
-      quantity: 1,
+      quantity,
     });
+    setSearchAddQuantity(quantityKey, 1, item.available_quantity);
     await refreshDeckItems();
     await refreshSearchResults();
     highlightDecklistRow(addedItem.section, addedItem.oracle_id);
@@ -1046,8 +1180,55 @@ async function addInventoryItemToDeck(item: WorkspaceDeckInventoryItem): Promise
   }
 }
 
+async function addWishCardToDeck(item: WorkspaceWishDeckSearchResult): Promise<void> {
+  const deck = selectedDeck.value;
+  if (!deck?.is_wish) {
+    return;
+  }
+  const addingKey = `${item.oracle_id}:${item.language_code}`;
+  const quantityKey = wishSearchQuantityKey(item);
+  const quantity = normalizedSearchAddQuantity(quantityKey);
+  const nextAdding = new Set(addingItemIds.value);
+  nextAdding.add(addingKey);
+  addingItemIds.value = nextAdding;
+  error.value = '';
+  message.value = '';
+  try {
+    const addedItem = await addWorkspaceWishDeckItem(deck.id, {
+      oracle_id: item.oracle_id,
+      language_code: item.language_code,
+      section: 'main',
+      quantity,
+    });
+    setSearchAddQuantity(quantityKey, 1);
+    await refreshDeckItems();
+    await refreshSearchResults();
+    highlightDecklistRow(addedItem.section, addedItem.oracle_id);
+  } catch (requestError) {
+    error.value = getApiErrorMessage(requestError, 'Card could not be added to wish deck');
+  } finally {
+    const remainingAdding = new Set(addingItemIds.value);
+    remainingAdding.delete(addingKey);
+    addingItemIds.value = remainingAdding;
+  }
+}
+
+async function incrementWishDecklistRow(row: DeckSectionRow): Promise<void> {
+  const deck = selectedDeck.value;
+  const item = row.items[0];
+  if (!deck?.is_wish || !item) {
+    return;
+  }
+  await runDeckItemEdit(
+    item,
+    () => updateWorkspaceWishDeckItem(deck.id, item.id, { quantity: item.quantity + 1 }),
+    'Card quantity could not be updated',
+  );
+  highlightDecklistRow(item.section, item.oracle_id);
+}
+
 async function runDeckItemEdit(
-  item: WorkspaceDeckItem,
+  item: DeckListItem,
   action: () => Promise<unknown>,
   fallbackMessage: string,
 ): Promise<void> {
@@ -1073,7 +1254,7 @@ async function runDeckItemEdit(
   }
 }
 
-async function decrementDeckItem(item: WorkspaceDeckItem): Promise<void> {
+async function decrementDeckItem(item: DeckListItem): Promise<void> {
   const deck = selectedDeck.value;
   if (!deck) {
     return;
@@ -1082,26 +1263,33 @@ async function decrementDeckItem(item: WorkspaceDeckItem): Promise<void> {
     item,
     () =>
       item.quantity <= 1
-        ? deleteWorkspaceDeckItem(deck.id, item.id)
-        : updateWorkspaceDeckItem(deck.id, item.id, { quantity: item.quantity - 1 }),
+        ? deck.is_wish
+          ? deleteWorkspaceWishDeckItem(deck.id, item.id)
+          : deleteWorkspaceDeckItem(deck.id, item.id)
+        : deck.is_wish
+          ? updateWorkspaceWishDeckItem(deck.id, item.id, { quantity: item.quantity - 1 })
+          : updateWorkspaceDeckItem(deck.id, item.id, { quantity: item.quantity - 1 }),
     'Card quantity could not be updated',
   );
 }
 
-async function removeDeckItem(item: WorkspaceDeckItem): Promise<void> {
+async function removeDeckItem(item: DeckListItem): Promise<void> {
   const deck = selectedDeck.value;
   if (!deck) {
     return;
   }
   await runDeckItemEdit(
     item,
-    () => deleteWorkspaceDeckItem(deck.id, item.id),
+    () =>
+      deck.is_wish
+        ? deleteWorkspaceWishDeckItem(deck.id, item.id)
+        : deleteWorkspaceDeckItem(deck.id, item.id),
     'Card could not be removed from deck',
   );
 }
 
 async function moveDeckItemCopiesToSection(
-  item: WorkspaceDeckItem,
+  item: DeckListItem,
   section: string,
   quantity: number,
 ): Promise<void> {
@@ -1112,7 +1300,10 @@ async function moveDeckItemCopiesToSection(
   openMoveMenuItemId.value = null;
   await runDeckItemEdit(
     item,
-    () => updateWorkspaceDeckItem(deck.id, item.id, { section, quantity }),
+    () =>
+      deck.is_wish
+        ? updateWorkspaceWishDeckItem(deck.id, item.id, { section, quantity })
+        : updateWorkspaceDeckItem(deck.id, item.id, { section, quantity }),
     'Card could not be moved',
   );
 }
@@ -1411,14 +1602,98 @@ onBeforeUnmount(() => {
               {{ searchResultCount }}
             </strong>
           </div>
-          <p v-if="selectedDeck?.is_wish" class="empty-state">
-            Wish deck search will be added after physical allocation.
+          <p v-if="!selectedDeck" class="empty-state">Create or select a deck.</p>
+          <p v-else-if="!hasSearchContext" class="empty-state">
+            {{ selectedDeck.is_wish ? 'Search catalog cards by name.' : 'Search owned cards by name.' }}
           </p>
-          <p v-else-if="!selectedDeck" class="empty-state">Create or select a physical deck.</p>
-          <p v-else-if="!hasSearchContext" class="empty-state">Search owned cards by name.</p>
-          <p v-else-if="!searchResults.length && !searchLoading" class="empty-state">
-            No owned physical cards match this search.
+          <p
+            v-else-if="
+              searchLoading &&
+                (selectedDeck.is_wish ? !wishSearchResults.length : !searchResults.length)
+            "
+            class="empty-state deck-loading-state"
+            aria-live="polite"
+          >
+            Loading search results...
           </p>
+          <p
+            v-else-if="
+              selectedDeck.is_wish
+                ? !wishSearchResults.length && !searchLoading
+                : !searchResults.length && !searchLoading
+            "
+            class="empty-state"
+          >
+            {{ selectedDeck.is_wish ? 'No catalog cards match this search.' : 'No owned physical cards match this search.' }}
+          </p>
+          <div v-else-if="selectedDeck.is_wish" class="deck-search-list">
+            <article
+              v-for="result in wishSearchResults"
+              :key="`${result.oracle_id}:${result.language_code}`"
+              class="deck-result-item wish-search-result"
+              @pointerenter="startHoverPreview($event, wishSearchPreviewCandidate(result), result.language_code)"
+              @pointermove="updateHoverPreviewPosition"
+              @pointerleave="stopHoverPreview"
+              @mouseenter="startHoverPreview($event, wishSearchPreviewCandidate(result), result.language_code)"
+              @mousemove="updateHoverPreviewPosition"
+              @mouseleave="stopHoverPreview"
+              @mouseover="startHoverPreview($event, wishSearchPreviewCandidate(result), result.language_code)"
+              @mouseout="stopHoverPreviewIfLeaving"
+            >
+              <div class="deck-result-item-main">
+                <strong>{{ result.name }}</strong>
+                <span>{{ result.type }}</span>
+              </div>
+              <div class="wish-search-result-cost" aria-label="Mana cost">
+                <ScryfallSymbolsText v-if="result.mana_cost" :text="result.mana_cost" />
+              </div>
+              <div
+                class="deck-result-item-actions"
+                @pointerenter="stopHoverPreview"
+                @mouseenter="stopHoverPreview"
+                @mouseover.stop
+              >
+                <div class="search-add-quantity" aria-label="Add quantity">
+                  <button
+                    type="button"
+                    class="quantity-step-button"
+                    :aria-label="`Decrease ${result.name} quantity`"
+                    :disabled="normalizedSearchAddQuantity(wishSearchQuantityKey(result)) <= 1"
+                    @click="adjustSearchAddQuantity(wishSearchQuantityKey(result), -1)"
+                  >
+                    <i class="pi pi-minus" aria-hidden="true" />
+                  </button>
+                  <input
+                    type="number"
+                    min="1"
+                    :max="MAX_WISH_ADD_QUANTITY"
+                    :value="normalizedSearchAddQuantity(wishSearchQuantityKey(result))"
+                    :aria-label="`${result.name} quantity to add`"
+                    @input="updateSearchAddQuantityFromInput(wishSearchQuantityKey(result), $event)"
+                    @keydown.enter.prevent="addWishCardToDeck(result)"
+                  />
+                  <button
+                    type="button"
+                    class="quantity-step-button"
+                    :aria-label="`Increase ${result.name} quantity`"
+                    :disabled="normalizedSearchAddQuantity(wishSearchQuantityKey(result)) >= MAX_WISH_ADD_QUANTITY"
+                    @click="adjustSearchAddQuantity(wishSearchQuantityKey(result), 1)"
+                  >
+                    <i class="pi pi-plus" aria-hidden="true" />
+                  </button>
+                </div>
+                <Button
+                  icon="pi pi-plus"
+                  size="small"
+                  rounded
+                  :aria-label="`Add ${result.name}`"
+                  :disabled="isAddingItem(`${result.oracle_id}:${result.language_code}`)"
+                  :loading="isAddingItem(`${result.oracle_id}:${result.language_code}`)"
+                  @click="addWishCardToDeck(result)"
+                />
+              </div>
+            </article>
+          </div>
           <div v-else class="deck-search-list">
             <article v-for="result in searchResults" :key="result.oracle_id" class="deck-search-result">
             <button
@@ -1459,11 +1734,11 @@ onBeforeUnmount(() => {
               >
                 <div class="deck-result-item-main">
                   <strong>{{ item.name }}</strong>
-                  <span>
-                    {{ item.collection_name }} / {{ item.set_code.toUpperCase() }}
-                    #{{ item.collector_number }} / {{ item.language }} /
-                    {{ item.finish }} / {{ item.condition_code }}
-                  </span>
+                  <span>{{ item.collection_name }}</span>
+                  <small>
+                    {{ item.set_code.toUpperCase() }} #{{ item.collector_number }} /
+                    {{ item.language }} / {{ item.finish }} / {{ item.condition_code }}
+                  </small>
                   <button
                     v-if="item.allocated_quantity > 0"
                     type="button"
@@ -1506,6 +1781,42 @@ onBeforeUnmount(() => {
                   @mouseover.stop
                 >
                   <span>{{ item.available_quantity }} / {{ item.owned_quantity }}</span>
+                  <div class="search-add-quantity" aria-label="Add quantity">
+                    <button
+                      type="button"
+                      class="quantity-step-button"
+                      :aria-label="`Decrease ${item.name} quantity`"
+                      :disabled="
+                        item.available_quantity <= 0 ||
+                        normalizedSearchAddQuantity(inventorySearchQuantityKey(item), item.available_quantity) <= 1
+                      "
+                      @click="adjustSearchAddQuantity(inventorySearchQuantityKey(item), -1, item.available_quantity)"
+                    >
+                      <i class="pi pi-minus" aria-hidden="true" />
+                    </button>
+                    <input
+                      type="number"
+                      min="1"
+                      :max="item.available_quantity"
+                      :value="normalizedSearchAddQuantity(inventorySearchQuantityKey(item), item.available_quantity)"
+                      :aria-label="`${item.name} quantity to add`"
+                      :disabled="item.available_quantity <= 0"
+                      @input="updateSearchAddQuantityFromInput(inventorySearchQuantityKey(item), $event, item.available_quantity)"
+                      @keydown.enter.prevent="addInventoryItemToDeck(item)"
+                    />
+                    <button
+                      type="button"
+                      class="quantity-step-button"
+                      :aria-label="`Increase ${item.name} quantity`"
+                      :disabled="
+                        item.available_quantity <= 0 ||
+                        normalizedSearchAddQuantity(inventorySearchQuantityKey(item), item.available_quantity) >= item.available_quantity
+                      "
+                      @click="adjustSearchAddQuantity(inventorySearchQuantityKey(item), 1, item.available_quantity)"
+                    >
+                      <i class="pi pi-plus" aria-hidden="true" />
+                    </button>
+                  </div>
                   <Button
                     icon="pi pi-plus"
                     size="small"
@@ -1574,8 +1885,19 @@ onBeforeUnmount(() => {
                   size="small"
                   rounded
                   text
-                  :aria-label="`Find available copies of ${item.name}`"
-                  @click="searchDecklistOracle(item)"
+                  :aria-label="
+                    selectedDeck.is_wish
+                      ? `Add one ${item.name}`
+                      : `Find available copies of ${item.name}`
+                  "
+                  :title="selectedDeck.is_wish ? 'Add one card' : 'Find available copies'"
+                  :disabled="selectedDeck.is_wish && isEditingDecklistRow(item)"
+                  :loading="selectedDeck.is_wish && isEditingDecklistRow(item)"
+                  @click="
+                    selectedDeck.is_wish
+                      ? incrementWishDecklistRow(item)
+                      : searchDecklistOracle(item)
+                  "
                 />
                 <strong>{{ item.quantity }}</strong>
               </div>
@@ -1595,7 +1917,7 @@ onBeforeUnmount(() => {
                 >
                   <div>
                     <strong>{{ deckItem.name }}</strong>
-                    <span>{{ deckItemDetails(deckItem) }}</span>
+                    <span>{{ deckListItemDetails(deckItem) }}</span>
                   </div>
                   <span class="decklist-detail-quantity">{{ deckItem.quantity }}</span>
                   <div

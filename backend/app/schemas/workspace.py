@@ -119,6 +119,36 @@ class WorkspaceDeckItemUpdate(BaseModel):
     quantity: int | None = Field(default=None, ge=1)
 
 
+class WorkspaceWishDeckSearchResultRead(BaseModel):
+    oracle_id: str
+    language_code: str
+    language: str
+    name: str
+    type: str
+    mana_cost: str
+    printing_id: int | None = None
+    release_date: int | None = None
+
+
+class WorkspaceWishDeckItemRead(WorkspaceWishDeckSearchResultRead):
+    id: int
+    section: str
+    quantity: int
+    linked_collection_item_id: int | None = None
+
+
+class WorkspaceWishDeckItemCreate(BaseModel):
+    oracle_id: str
+    language_code: str = Field(min_length=2, max_length=16)
+    section: DeckSection = "main"
+    quantity: int = Field(default=1, ge=1)
+
+
+class WorkspaceWishDeckItemUpdate(BaseModel):
+    section: DeckSection | None = None
+    quantity: int | None = Field(default=None, ge=1)
+
+
 class WorkspaceDeckItemAllocationRead(BaseModel):
     deck_item_id: int
     deck_id: int

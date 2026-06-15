@@ -108,6 +108,24 @@ export type WorkspaceDeckItem = {
   oracle_id: string;
 };
 
+export type WorkspaceWishDeckSearchResult = {
+  oracle_id: string;
+  language_code: string;
+  language: string;
+  name: string;
+  type: string;
+  mana_cost: string;
+  printing_id: number | null;
+  release_date: number | null;
+};
+
+export type WorkspaceWishDeckItem = WorkspaceWishDeckSearchResult & {
+  id: number;
+  section: string;
+  quantity: number;
+  linked_collection_item_id: number | null;
+};
+
 export type WorkspaceDeckInventoryAllocation = {
   deck_item_id: number;
   deck_id: number;
@@ -550,6 +568,93 @@ export function updateWorkspaceDeckItem(
 
 export function deleteWorkspaceDeckItem(deckId: number, itemId: number): Promise<void> {
   return request<void>(`/api/workspace/decks/${deckId}/items/${itemId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function listWorkspaceWishDeckItems(deckId: number): Promise<WorkspaceWishDeckItem[]> {
+  return request<WorkspaceWishDeckItem[]>(`/api/workspace/decks/${deckId}/wish-items`);
+}
+
+export function searchWorkspaceWishDeckCards(
+  deckId: number,
+  query: string,
+  filters: WorkspaceDeckInventorySearchFilters,
+  page?: { offset: number; limit: number },
+): Promise<{
+  results: WorkspaceWishDeckSearchResult[];
+  total_count: number;
+  total_items: number;
+}> {
+  const params = new URLSearchParams({ query, search_field: filters.search_field });
+  filters.colors.forEach((color) => params.append('colors', color));
+  filters.rarities.forEach((rarity) => params.append('rarities', rarity));
+  params.set('color_match', filters.color_match);
+  if (filters.mana_value_min !== null) {
+    params.set('mana_value_min', String(filters.mana_value_min));
+  }
+  if (filters.mana_value_max !== null) {
+    params.set('mana_value_max', String(filters.mana_value_max));
+  }
+  if (filters.has_uncolored_mana) {
+    params.set('has_uncolored_mana', 'true');
+  }
+  if (filters.has_colorless_mana) {
+    params.set('has_colorless_mana', 'true');
+  }
+  if (filters.has_generic_mana) {
+    params.set('has_generic_mana', 'true');
+  }
+  if (filters.no_colors) {
+    params.set('no_colors', 'true');
+  }
+  if (page) {
+    params.set('offset', String(page.offset));
+    params.set('limit', String(page.limit));
+  }
+  return requestResponse(`/api/workspace/decks/${deckId}/wish-items/search?${params.toString()}`).then(
+    async (response) => {
+      const results = (await response.json()) as WorkspaceWishDeckSearchResult[];
+      return {
+        results,
+        total_count: Number(response.headers.get('X-Total-Count') ?? results.length),
+        total_items: Number(response.headers.get('X-Total-Items') ?? results.length),
+      };
+    },
+  );
+}
+
+export function addWorkspaceWishDeckItem(
+  deckId: number,
+  payload: {
+    oracle_id: string;
+    language_code: string;
+    section: string;
+    quantity?: number;
+  },
+): Promise<WorkspaceWishDeckItem> {
+  return request<WorkspaceWishDeckItem>(`/api/workspace/decks/${deckId}/wish-items`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function updateWorkspaceWishDeckItem(
+  deckId: number,
+  itemId: number,
+  payload: {
+    section?: string;
+    quantity?: number;
+  },
+): Promise<WorkspaceWishDeckItem> {
+  return request<WorkspaceWishDeckItem>(`/api/workspace/decks/${deckId}/wish-items/${itemId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(payload),
+  });
+}
+
+export function deleteWorkspaceWishDeckItem(deckId: number, itemId: number): Promise<void> {
+  return request<void>(`/api/workspace/decks/${deckId}/wish-items/${itemId}`, {
     method: 'DELETE',
   });
 }

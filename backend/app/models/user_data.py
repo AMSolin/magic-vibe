@@ -163,7 +163,6 @@ class WishDeckItem(UserDataBase):
         UniqueConstraint(
             "deck_id",
             "oracle_id",
-            "language_code",
             "section",
             name="uq_wish_deck_items_identity",
         ),

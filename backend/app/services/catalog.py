@@ -100,9 +100,402 @@ def search_cards(
             "language_code": row["language_code"],
             "language": languages[row["language_code"]],
             "name": row["name"],
+            "search_priority": row["search_priority"],
         }
         for row in rows
     ]
+
+
+def search_wish_deck_cards(
+    query: str,
+    *,
+    field: str = "name",
+    colors: list[str] | None = None,
+    rarities: set[str] | None = None,
+    mana_value_min: float | None = None,
+    mana_value_max: float | None = None,
+    color_match: str = "includes_all",
+    has_uncolored_mana: bool = False,
+    has_colorless_mana: bool = False,
+    has_generic_mana: bool = False,
+    no_colors: bool = False,
+    offset: int = 0,
+    limit: int = 50,
+) -> tuple[list[dict], int]:
+    normalized_query = query.casefold()
+    if field not in {"name", "type", "text"}:
+        raise ValueError("Unsupported search field")
+    if color_match not in {"includes_all", "includes_any", "exactly"}:
+        raise ValueError("Unsupported color match")
+    selected_colors = {color.upper() for color in colors or [] if color.upper() in {"W", "U", "B", "R", "G"}}
+    selected_rarities = {rarity.casefold() for rarity in rarities or set() if rarity.strip()}
+    with catalog_connection() as catalog:
+        columns = {
+            row["name"]
+            for row in catalog.execute("pragma table_info(card_search_index)")
+        }
+        normalized_field = (
+            "normalized_name"
+            if field == "name" and "normalized_name" in columns
+            else "unicode_casefold(name)"
+            if field == "name"
+            else f"unicode_casefold({field})"
+        )
+        filter_sql_parts: list[str] = []
+        filter_params: list[object] = []
+        if selected_rarities:
+            filter_sql_parts.append(
+                f"""
+                exists (
+                    select 1
+                    from card_printings as rarity_printing
+                    where rarity_printing.oracle_id = si.oracle_id
+                    and unicode_casefold(rarity_printing.rarity) in ({",".join("?" for _ in selected_rarities)})
+                )
+                """
+            )
+            filter_params.extend(sorted(selected_rarities))
+        if mana_value_min is not None:
+            filter_sql_parts.append("si.mana_value >= ?")
+            filter_params.append(mana_value_min)
+        if mana_value_max is not None:
+            filter_sql_parts.append("si.mana_value <= ?")
+            filter_params.append(mana_value_max)
+        if no_colors:
+            filter_sql_parts.append("oracle_filter.color_identities = ''")
+        if has_colorless_mana:
+            filter_sql_parts.append("instr(oracle_filter.mana_cost, '{C}') > 0")
+        needs_requested_mana_symbol = has_uncolored_mana or has_colorless_mana or has_generic_mana
+        has_requested_mana_symbol_sql = (
+            "("
+            + " or ".join(
+                part
+                for part in [
+                    "instr(oracle_filter.mana_cost, '{C}') > 0"
+                    if has_uncolored_mana or has_colorless_mana
+                    else "",
+                    "oracle_filter.mana_cost regexp '\\{(?:[0-9]+|X)\\}'"
+                    if has_uncolored_mana or has_generic_mana
+                    else "",
+                ]
+                if part
+            )
+            + ")"
+        )
+        if selected_colors:
+            if color_match in {"includes_all", "exactly"}:
+                for color in sorted(selected_colors):
+                    filter_sql_parts.append("instr(oracle_filter.color_identities, ?) > 0")
+                    filter_params.append(color)
+                if color_match == "exactly":
+                    filter_sql_parts.append(
+                        "not exists ("
+                        "select 1 from wish_color_values as color_value "
+                        f"where color_value.oracle_id = si.oracle_id "
+                        f"and color_value.color not in ({','.join('?' for _ in selected_colors)})"
+                        ")"
+                    )
+                    filter_params.extend(sorted(selected_colors))
+                if needs_requested_mana_symbol:
+                    filter_sql_parts.append(has_requested_mana_symbol_sql)
+            elif color_match == "includes_any":
+                color_parts = [
+                    "instr(oracle_filter.color_identities, ?) > 0"
+                    for _ in selected_colors
+                ]
+                filter_params.extend(sorted(selected_colors))
+                if needs_requested_mana_symbol:
+                    color_parts.append(has_requested_mana_symbol_sql)
+                filter_sql_parts.append("(" + " or ".join(color_parts) + ")")
+        elif needs_requested_mana_symbol:
+            if color_match == "exactly":
+                filter_sql_parts.append(
+                    "oracle_filter.color_identities = '' and " + has_requested_mana_symbol_sql
+                )
+            else:
+                filter_sql_parts.append(has_requested_mana_symbol_sql)
+        filters_sql = " and ".join(filter_sql_parts)
+        if filters_sql:
+            filters_sql = f" and {filters_sql}"
+        catalog.create_function(
+            "regexp",
+            2,
+            lambda pattern, value: 1 if value and re.search(pattern, value, re.IGNORECASE) else 0,
+        )
+        common_ctes = """
+            oracle_filter as (
+                select
+                    p.oracle_id,
+                    group_concat(distinct f.color_identity) as color_identities,
+                    group_concat(f.mana_cost, '') as mana_cost
+                from card_printings as p
+                join card_printing_faces as f on f.printing_id = p.id
+                group by p.oracle_id
+            ),
+            wish_color_values as (
+                select distinct p.oracle_id, substr(f.color_identity, numbers.position, 1) as color
+                from card_printings as p
+                join card_printing_faces as f on f.printing_id = p.id
+                join (
+                    select 1 as position union all select 2 union all select 3 union all select 4 union all select 5
+                ) as numbers
+                where substr(f.color_identity, numbers.position, 1) in ('W', 'U', 'B', 'R', 'G')
+            )
+        """
+
+        def fetch_match_rows(match_sql: str, match_params: list[object]) -> list[sqlite3.Row]:
+            return catalog.execute(
+                f"""
+                with {common_ctes},
+                ranked_matches as (
+                    select
+                        si.oracle_id,
+                        si.language_code,
+                        si.name,
+                        si.type,
+                        si.search_priority,
+                        row_number() over (
+                            partition by si.oracle_id
+                            order by si.search_priority, si.name collate nocase, si.language_code
+                        ) as match_rank
+                    from card_search_index as si
+                    join oracle_filter on oracle_filter.oracle_id = si.oracle_id
+                    where {match_sql}
+                    {filters_sql}
+                )
+                select oracle_id, language_code, name, type, search_priority
+                from ranked_matches
+                where match_rank = 1
+                order by search_priority, name collate nocase, language_code
+                """,
+                [*match_params, *filter_params],
+            ).fetchall()
+
+        if normalized_query and field == "name":
+            match_rows = fetch_match_rows(
+                f"{normalized_field} >= ? and {normalized_field} < ?",
+                [normalized_query, f"{normalized_query}\U0010ffff"],
+            )
+            if not match_rows:
+                match_rows = fetch_match_rows(f"{normalized_field} like ?", [f"%{normalized_query}%"])
+        elif normalized_query:
+            match_rows = fetch_match_rows(f"{normalized_field} like ?", [f"%{normalized_query}%"])
+        else:
+            match_rows = catalog.execute(
+                f"""
+                with {common_ctes},
+                ranked_matches as (
+                    select
+                        si.oracle_id,
+                        si.language_code,
+                        si.name,
+                        si.type,
+                        si.search_priority,
+                        row_number() over (
+                            partition by si.oracle_id
+                            order by
+                                case when si.language_code = 'en' then 0 else 1 end,
+                                si.search_priority,
+                                si.name collate nocase,
+                                si.language_code
+                        ) as match_rank
+                    from card_search_index as si
+                    join oracle_filter on oracle_filter.oracle_id = si.oracle_id
+                    where 1 = 1
+                    {filters_sql}
+                )
+                select oracle_id, language_code, name, type, search_priority
+                from ranked_matches
+                where match_rank = 1
+                order by search_priority, name collate nocase, language_code
+                """,
+                filter_params,
+            ).fetchall()
+        total_count = len(match_rows)
+        page_rows = match_rows[offset : offset + limit]
+        details = _wish_deck_details_for_rows(catalog, page_rows)
+    return details, total_count
+
+
+def wish_deck_card_details(requests: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
+    if not requests:
+        return {}
+    unique_requests = list(dict.fromkeys(requests))
+    with catalog_connection() as catalog:
+        catalog.execute("create temporary table wish_requests (oracle_id blob, language_code text)")
+        catalog.executemany(
+            "insert into wish_requests values (?, ?)",
+            [(UUID(oracle_id).bytes, language_code) for oracle_id, language_code in unique_requests],
+        )
+        rows = catalog.execute(
+            """
+            with preferred_printings as (
+                select
+                    wr.oracle_id,
+                    wr.language_code,
+                    p.id as printing_id,
+                    s.release_date,
+                    f.mana_cost,
+                    row_number() over (
+                        partition by wr.oracle_id, wr.language_code
+                        order by
+                            case when p.language_code = wr.language_code then 0 else 1 end,
+                            s.release_date desc,
+                            p.id desc
+                    ) as print_rank
+                from wish_requests as wr
+                join card_printings as p on p.oracle_id = wr.oracle_id
+                join sets as s on s.code = p.set_code
+                join card_printing_faces as f
+                    on f.printing_id = p.id
+                    and f.face_order = (
+                        select min(face_order)
+                        from card_printing_faces
+                        where printing_id = p.id
+                    )
+            ),
+            preferred_search_rows as (
+                select
+                    wr.oracle_id,
+                    wr.language_code,
+                    si.name,
+                    si.type,
+                    row_number() over (
+                        partition by wr.oracle_id, wr.language_code
+                        order by si.search_priority, si.name collate nocase
+                    ) as search_rank
+                from wish_requests as wr
+                join card_search_index as si
+                    on si.oracle_id = wr.oracle_id
+                    and si.language_code = wr.language_code
+            )
+            select
+                wr.oracle_id,
+                wr.language_code,
+                lang.name as language,
+                coalesce(sr.name, p.name) as name,
+                coalesce(sr.type, f.type) as type,
+                pp.mana_cost,
+                pp.printing_id,
+                pp.release_date
+            from wish_requests as wr
+            join languages as lang on lang.code = wr.language_code
+            join card_printings as p on p.oracle_id = wr.oracle_id
+            join card_printing_faces as f
+                on f.printing_id = p.id
+                and f.face_order = (
+                    select min(face_order)
+                    from card_printing_faces
+                    where printing_id = p.id
+                )
+            join preferred_printings as pp
+                on pp.oracle_id = wr.oracle_id
+                and pp.language_code = wr.language_code
+                and pp.print_rank = 1
+            left join preferred_search_rows as sr
+                on sr.oracle_id = wr.oracle_id
+                and sr.language_code = wr.language_code
+                and sr.search_rank = 1
+            where p.id = pp.printing_id
+            """,
+        ).fetchall()
+    return {
+        (_uuid_text(row["oracle_id"]), row["language_code"]): {
+            "oracle_id": _uuid_text(row["oracle_id"]),
+            "language_code": row["language_code"],
+            "language": row["language"],
+            "name": row["name"],
+            "type": row["type"] or "",
+            "mana_cost": row["mana_cost"] or "",
+            "printing_id": row["printing_id"],
+            "release_date": row["release_date"],
+        }
+        for row in rows
+    }
+
+
+def _wish_deck_details_for_rows(
+    catalog: sqlite3.Connection,
+    rows: list[sqlite3.Row],
+) -> list[dict]:
+    if not rows:
+        return []
+    catalog.execute("create temporary table wish_search_page (oracle_id blob, language_code text)")
+    catalog.executemany(
+        "insert into wish_search_page values (?, ?)",
+        [(row["oracle_id"], row["language_code"]) for row in rows],
+    )
+    detail_rows = catalog.execute(
+        """
+        with preferred_printings as (
+            select
+                wsp.oracle_id,
+                wsp.language_code,
+                p.id as printing_id,
+                s.release_date,
+                f.mana_cost,
+                row_number() over (
+                    partition by wsp.oracle_id, wsp.language_code
+                    order by
+                        case when p.language_code = wsp.language_code then 0 else 1 end,
+                        s.release_date desc,
+                        p.id desc
+                ) as print_rank
+            from wish_search_page as wsp
+            join card_printings as p on p.oracle_id = wsp.oracle_id
+            join sets as s on s.code = p.set_code
+            join card_printing_faces as f
+                on f.printing_id = p.id
+                and f.face_order = (
+                    select min(face_order)
+                    from card_printing_faces
+                    where printing_id = p.id
+                )
+        )
+        select
+            wsp.oracle_id,
+            wsp.language_code,
+            lang.name as language,
+            m.name,
+            m.type,
+            pp.mana_cost,
+            pp.printing_id,
+            pp.release_date
+        from wish_search_page as wsp
+        join languages as lang on lang.code = wsp.language_code
+        join preferred_printings as pp
+            on pp.oracle_id = wsp.oracle_id
+            and pp.language_code = wsp.language_code
+            and pp.print_rank = 1
+        join (
+            select oracle_id, language_code, name, type
+            from card_search_index
+            group by oracle_id, language_code, name, type
+        ) as m
+            on m.oracle_id = wsp.oracle_id
+            and m.language_code = wsp.language_code
+        """,
+    ).fetchall()
+    details_by_key = {
+        (row["oracle_id"], row["language_code"]): row
+        for row in detail_rows
+    }
+    details: list[dict] = []
+    for row in rows:
+        detail = details_by_key.get((row["oracle_id"], row["language_code"]))
+        details.append(
+            {
+                "oracle_id": _uuid_text(row["oracle_id"]),
+                "language_code": row["language_code"],
+                "language": detail["language"] if detail else row["language_code"],
+                "name": row["name"],
+                "type": row["type"] or (detail["type"] if detail else ""),
+                "mana_cost": (detail["mana_cost"] if detail else "") or "",
+                "printing_id": detail["printing_id"] if detail else None,
+                "release_date": detail["release_date"] if detail else None,
+            }
+        )
+    return details
 
 
 def oracle_ids_matching_deck_filters(

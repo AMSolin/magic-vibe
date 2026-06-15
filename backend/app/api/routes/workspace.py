@@ -32,6 +32,10 @@ from app.schemas.workspace import (
     WorkspaceDeckItemUpdate,
     WorkspaceDeckRead,
     WorkspaceDeckUpdate,
+    WorkspaceWishDeckItemCreate,
+    WorkspaceWishDeckItemRead,
+    WorkspaceWishDeckItemUpdate,
+    WorkspaceWishDeckSearchResultRead,
     WorkspacePlayerCreate,
     WorkspacePlayerRead,
     WorkspacePlayerUpdate,
@@ -456,6 +460,22 @@ def _load_physical_deck_item(db: Session, deck_id: int, item_id: int) -> tuple[D
     return deck, item
 
 
+def _load_wish_deck_item(db: Session, deck_id: int, item_id: int) -> tuple[Deck, WishDeckItem]:
+    deck = db.get(Deck, deck_id)
+    if deck is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deck not found")
+    _ensure_wish_deck(deck)
+    item = db.scalar(
+        select(WishDeckItem).where(
+            WishDeckItem.id == item_id,
+            WishDeckItem.deck_id == deck.id,
+        )
+    )
+    if item is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Wish deck item not found")
+    return deck, item
+
+
 def _allocation_breakdown(
     db: Session,
     collection_item_ids: list[int],
@@ -837,7 +857,8 @@ def _attached_inventory_candidates(
             search_params = [f"%{normalized_search_text}%"]
         select_columns = (
             f"{select_columns}, "
-            "search_match.matched_language_code, search_match.matched_name"
+            "search_match.matched_language_code, search_match.matched_name, "
+            "search_match.matched_search_priority"
         )
         joins = f"""
             {joins}
@@ -845,12 +866,14 @@ def _attached_inventory_candidates(
                 select
                     oracle_id,
                     language_code as matched_language_code,
-                    name as matched_name
+                    name as matched_name,
+                    search_priority as matched_search_priority
                 from (
                     select
                         oracle_id,
                         language_code,
                         name,
+                        search_priority,
                         row_number() over (
                             partition by oracle_id
                             order by search_priority, name collate nocase, language_code
@@ -1175,8 +1198,52 @@ def _ensure_physical_deck(deck: Deck) -> None:
     if deck.is_wish:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Wish deck items are not implemented yet",
+            detail="Use wish deck item endpoints for wish decks",
         )
+
+
+def _ensure_wish_deck(deck: Deck) -> None:
+    if not deck.is_wish:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Wish deck item endpoints are only available for wish decks",
+        )
+
+
+def _wish_item_read(item: WishDeckItem, details: dict) -> WorkspaceWishDeckItemRead:
+    return WorkspaceWishDeckItemRead(
+        id=item.id,
+        oracle_id=str(UUID(bytes=item.oracle_id)),
+        language_code=item.language_code,
+        language=details["language"],
+        name=details["name"],
+        type=details["type"],
+        mana_cost=details["mana_cost"],
+        printing_id=details["printing_id"],
+        release_date=details["release_date"],
+        section=item.section,
+        quantity=item.quantity,
+        linked_collection_item_id=item.linked_collection_item_id,
+    )
+
+
+def _wish_items_read(items: list[WishDeckItem]) -> list[WorkspaceWishDeckItemRead]:
+    requests = [(str(UUID(bytes=item.oracle_id)), item.language_code) for item in items]
+    try:
+        details_by_key = catalog.wish_deck_card_details(requests)
+    except FileNotFoundError as error:
+        raise _catalog_error(error) from error
+    reads: list[WorkspaceWishDeckItemRead] = []
+    for item in items:
+        key = (str(UUID(bytes=item.oracle_id)), item.language_code)
+        details = details_by_key.get(key)
+        if details is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Wish deck item no longer resolves to the installed catalog",
+            )
+        reads.append(_wish_item_read(item, details))
+    return reads
 
 
 def _cached_oracle_image(
@@ -1444,24 +1511,7 @@ def list_deck_items(
     deck = db.get(Deck, deck_id)
     if deck is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deck not found")
-    if deck.is_wish:
-        items = list(
-            db.scalars(
-                select(WishDeckItem)
-                .where(WishDeckItem.deck_id == deck.id)
-                .order_by(WishDeckItem.section, WishDeckItem.id)
-            )
-        )
-        return [
-            WorkspaceDeckItemRead(
-                id=item.id,
-                section=item.section,
-                quantity=item.quantity,
-                name="Card",
-                oracle_id=str(UUID(bytes=item.oracle_id)),
-            )
-            for item in items
-        ]
+    _ensure_physical_deck(deck)
     attached_items = _attached_deck_items(db, deck.id)
     if attached_items is not None:
         return attached_items
@@ -1473,6 +1523,246 @@ def list_deck_items(
         )
     )
     return [_deck_item_read(db, item) for item in items]
+
+
+@router.get(
+    "/decks/{deck_id}/wish-items/search",
+    response_model=list[WorkspaceWishDeckSearchResultRead],
+)
+def search_wish_deck_cards(
+    deck_id: int,
+    response: Response,
+    query: str = Query(default="", max_length=255),
+    search_field: str = Query(default="name"),
+    colors: list[str] = Query(default=[]),
+    rarities: list[str] = Query(default=[]),
+    mana_value_min: float | None = Query(default=None, ge=0),
+    mana_value_max: float | None = Query(default=None, ge=0),
+    color_match: str = Query(default="includes_all"),
+    has_uncolored_mana: bool = False,
+    has_colorless_mana: bool = False,
+    has_generic_mana: bool = False,
+    no_colors: bool = False,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+    db: Session = Depends(get_user_data_db),
+) -> list[WorkspaceWishDeckSearchResultRead]:
+    deck = db.get(Deck, deck_id)
+    if deck is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deck not found")
+    _ensure_wish_deck(deck)
+    search_text = query.strip()
+    if search_field not in {"name", "type", "text"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid search_field",
+        )
+    selected_colors = [color.upper() for color in colors if color.upper() in {"W", "U", "B", "R", "G"}]
+    selected_rarities = {rarity.casefold() for rarity in rarities if rarity.strip()}
+    if color_match not in {"includes_all", "includes_any", "exactly"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid color_match",
+        )
+    if (
+        mana_value_min is not None
+        and mana_value_max is not None
+        and mana_value_min > mana_value_max
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid mana value range",
+        )
+    has_filters = bool(
+        selected_colors
+        or selected_rarities
+        or mana_value_min is not None
+        or mana_value_max is not None
+        or has_uncolored_mana
+        or has_colorless_mana
+        or has_generic_mana
+        or no_colors
+    )
+    if not search_text and not has_filters:
+        response.headers["X-Total-Count"] = "0"
+        response.headers["X-Total-Items"] = "0"
+        return []
+    try:
+        results, total_count = catalog.search_wish_deck_cards(
+            search_text,
+            field=search_field,
+            colors=selected_colors,
+            rarities=selected_rarities,
+            mana_value_min=mana_value_min,
+            mana_value_max=mana_value_max,
+            color_match=color_match,
+            has_uncolored_mana=has_uncolored_mana,
+            has_colorless_mana=has_colorless_mana,
+            has_generic_mana=has_generic_mana,
+            no_colors=no_colors,
+            offset=offset,
+            limit=limit,
+        )
+    except FileNotFoundError as error:
+        raise _catalog_error(error) from error
+    response.headers["X-Total-Count"] = str(total_count)
+    response.headers["X-Total-Items"] = str(total_count)
+    return [WorkspaceWishDeckSearchResultRead(**result) for result in results]
+
+
+@router.get(
+    "/decks/{deck_id}/wish-items",
+    response_model=list[WorkspaceWishDeckItemRead],
+)
+def list_wish_deck_items(
+    deck_id: int,
+    db: Session = Depends(get_user_data_db),
+) -> list[WorkspaceWishDeckItemRead]:
+    deck = db.get(Deck, deck_id)
+    if deck is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deck not found")
+    _ensure_wish_deck(deck)
+    items = list(
+        db.scalars(
+            select(WishDeckItem)
+            .where(WishDeckItem.deck_id == deck.id)
+            .order_by(WishDeckItem.section, WishDeckItem.id)
+        )
+    )
+    return _wish_items_read(items)
+
+
+@router.post(
+    "/decks/{deck_id}/wish-items",
+    response_model=WorkspaceWishDeckItemRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def add_wish_deck_item(
+    deck_id: int,
+    payload: WorkspaceWishDeckItemCreate,
+    db: Session = Depends(get_user_data_db),
+) -> WorkspaceWishDeckItemRead:
+    deck = db.get(Deck, deck_id)
+    if deck is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Deck not found")
+    _ensure_wish_deck(deck)
+    try:
+        oracle_id = UUID(payload.oracle_id)
+    except ValueError as error:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid oracle_id",
+        ) from error
+    try:
+        details_by_key = catalog.wish_deck_card_details(
+            [(str(oracle_id), payload.language_code)]
+        )
+    except FileNotFoundError as error:
+        raise _catalog_error(error) from error
+    details = details_by_key.get((str(oracle_id), payload.language_code))
+    if details is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Wish deck card not found in installed catalog",
+        )
+    item = db.scalar(
+        select(WishDeckItem).where(
+            WishDeckItem.deck_id == deck.id,
+            WishDeckItem.oracle_id == oracle_id.bytes,
+            WishDeckItem.section == payload.section,
+        )
+    )
+    if item is None:
+        item = WishDeckItem(
+            deck_id=deck.id,
+            oracle_id=oracle_id.bytes,
+            language_code=payload.language_code,
+            section=payload.section,
+            quantity=payload.quantity,
+            created_at=int(time()),
+        )
+        db.add(item)
+    else:
+        item.quantity += payload.quantity
+        item.language_code = payload.language_code
+    deck.updated_at = int(time())
+    db.commit()
+    db.refresh(item)
+    return _wish_item_read(item, details)
+
+
+@router.patch(
+    "/decks/{deck_id}/wish-items/{item_id}",
+    response_model=WorkspaceWishDeckItemRead,
+)
+def update_wish_deck_item(
+    deck_id: int,
+    item_id: int,
+    payload: WorkspaceWishDeckItemUpdate,
+    db: Session = Depends(get_user_data_db),
+) -> WorkspaceWishDeckItemRead:
+    deck, item = _load_wish_deck_item(db, deck_id, item_id)
+    update_data = payload.model_dump(exclude_unset=True)
+    target_section = update_data.get("section", item.section)
+    if target_section != item.section:
+        move_quantity = update_data.get("quantity", item.quantity)
+        if move_quantity > item.quantity:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Cannot move more copies than the wish deck item contains",
+            )
+        target_item = db.scalar(
+            select(WishDeckItem).where(
+                WishDeckItem.deck_id == deck.id,
+                WishDeckItem.oracle_id == item.oracle_id,
+                WishDeckItem.section == target_section,
+            )
+        )
+        if target_item is None:
+            if move_quantity == item.quantity:
+                item.section = target_section
+                target_item = item
+            else:
+                item.quantity -= move_quantity
+                target_item = WishDeckItem(
+                    deck_id=deck.id,
+                    oracle_id=item.oracle_id,
+                    language_code=item.language_code,
+                    section=target_section,
+                    quantity=move_quantity,
+                    linked_collection_item_id=item.linked_collection_item_id,
+                    created_at=int(time()),
+                )
+                db.add(target_item)
+        else:
+            target_item.quantity += move_quantity
+            target_item.language_code = item.language_code
+            if move_quantity == item.quantity:
+                db.delete(item)
+            else:
+                item.quantity -= move_quantity
+        item = target_item
+    else:
+        item.quantity = update_data.get("quantity", item.quantity)
+    deck.updated_at = int(time())
+    db.commit()
+    db.refresh(item)
+    return _wish_items_read([item])[0]
+
+
+@router.delete(
+    "/decks/{deck_id}/wish-items/{item_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_wish_deck_item(
+    deck_id: int,
+    item_id: int,
+    db: Session = Depends(get_user_data_db),
+) -> None:
+    deck, item = _load_wish_deck_item(db, deck_id, item_id)
+    db.delete(item)
+    deck.updated_at = int(time())
+    db.commit()
 
 
 @router.get(
@@ -1548,6 +1838,7 @@ def search_physical_deck_inventory(
         return empty_search_results()
     matching_language_by_oracle_id: dict[str, str] = {}
     matching_name_by_oracle_id: dict[str, str] = {}
+    matching_priority_by_oracle_id: dict[str, int] = {}
     should_use_attached_filter_search = False
     if target_oracle_id is None and (search_text or has_filters):
         should_use_attached_filter_search = _can_use_attached_catalog(db)
@@ -1567,6 +1858,10 @@ def search_physical_deck_inventory(
                 suggestion["language_code"],
             )
             matching_name_by_oracle_id.setdefault(suggestion["oracle_id"], suggestion["name"])
+            matching_priority_by_oracle_id.setdefault(
+                suggestion["oracle_id"],
+                int(suggestion["search_priority"]),
+            )
     if target_oracle_id is not None:
         matching_oracle_ids = {target_oracle_id}
     else:
@@ -1621,6 +1916,11 @@ def search_physical_deck_inventory(
                         "oracle_id": candidate["oracle_id"],
                         "name": candidate.get("matched_name") or candidate["printing_name"],
                         "language_code": candidate.get("matched_language_code") or candidate["item_language_code"],
+                        "search_priority": (
+                            int(candidate["matched_search_priority"])
+                            if search_text
+                            else 999
+                        ),
                         "total_owned": 0,
                         "total_available": 0,
                         "items": [],
@@ -1635,7 +1935,11 @@ def search_physical_deck_inventory(
 
             sorted_groups = sorted(
                 raw_groups.values(),
-                key=lambda group: (group["name"].casefold(), group["oracle_id"]),
+                key=lambda group: (
+                    group["search_priority"],
+                    group["name"].casefold(),
+                    group["oracle_id"],
+                ),
             )
             response.headers["X-Total-Count"] = str(len(sorted_groups))
             response.headers["X-Total-Items"] = str(
@@ -1723,6 +2027,11 @@ def search_physical_deck_inventory(
                     matching_language_by_oracle_id.get(printing["oracle_id"])
                     or item.language_code
                 ),
+                "search_priority": (
+                    matching_priority_by_oracle_id[printing["oracle_id"]]
+                    if search_text and target_oracle_id is None
+                    else 999
+                ),
                 "total_owned": 0,
                 "total_available": 0,
                 "items": [],
@@ -1735,7 +2044,11 @@ def search_physical_deck_inventory(
 
     top_groups = sorted(
         raw_groups.values(),
-        key=lambda group: (group["name"].casefold(), group["oracle_id"]),
+        key=lambda group: (
+            group["search_priority"],
+            group["name"].casefold(),
+            group["oracle_id"],
+        ),
     )
     response.headers["X-Total-Count"] = str(len(top_groups))
     response.headers["X-Total-Items"] = str(sum(len(group["items"]) for group in top_groups))
