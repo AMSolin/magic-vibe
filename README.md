@@ -133,9 +133,133 @@ curl http://127.0.0.1:8000/health
 After the first launch, open the Admin page to initialize local user data and
 download/rebuild the Magic card catalog.
 
-Production deployment is planned as a separate setup: the backend should run as
-a systemd service bound to `127.0.0.1`, the frontend should be served from a
-production build, and nginx should expose the app on port 80/443.
+### 4. Production Deployment
+
+The production setup uses:
+
+- backend: systemd service bound to `127.0.0.1:8000`;
+- frontend: static production build copied to `/var/www/magic-vibe`;
+- nginx: public HTTP entry point on port `80`, serving frontend files and
+  proxying API requests to the backend.
+
+Build the frontend as the regular application user:
+
+```bash
+cd /home/magicvibe/magic-vibe/frontend
+npm run build
+```
+
+Copy the built frontend to a web-readable directory as `root` or a user with
+`sudo`:
+
+```bash
+sudo install -d -m 755 -o root -g root /var/www/magic-vibe
+sudo rm -rf /var/www/magic-vibe/*
+sudo cp -a /home/magicvibe/magic-vibe/frontend/dist/. /var/www/magic-vibe/
+sudo chown -R root:root /var/www/magic-vibe
+sudo find /var/www/magic-vibe -type d -exec chmod 755 {} \;
+sudo find /var/www/magic-vibe -type f -exec chmod 644 {} \;
+```
+
+Create `/etc/systemd/system/magic-vibe-backend.service`:
+
+```ini
+[Unit]
+Description=Magic Vibe FastAPI backend
+After=network.target
+
+[Service]
+Type=simple
+User=magicvibe
+Group=magicvibe
+WorkingDirectory=/home/magicvibe/magic-vibe/backend
+ExecStart=/home/magicvibe/magic-vibe/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+If a previous smoke test left an empty `backend/data/user_data.db`, remove that
+zero-byte file before starting the service. The Admin API will create a real
+database in the next step.
+
+Enable and start the backend:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable magic-vibe-backend.service
+sudo systemctl restart magic-vibe-backend.service
+sudo systemctl status magic-vibe-backend.service --no-pager
+curl http://127.0.0.1:8000/health
+```
+
+Create `/etc/nginx/sites-available/magic-vibe`:
+
+```nginx
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+
+    server_name _;
+
+    root /var/www/magic-vibe;
+    index index.html;
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8000/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location = /health {
+        proxy_pass http://127.0.0.1:8000/health;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+
+Enable the nginx site:
+
+```bash
+sudo ln -sfn /etc/nginx/sites-available/magic-vibe /etc/nginx/sites-enabled/magic-vibe
+sudo rm -f /etc/nginx/sites-enabled/default
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Initialize local user data after the backend is running:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/admin/user-data/recreate
+curl http://127.0.0.1:8000/api/admin/user-data
+```
+
+Verify the public HTTP deployment:
+
+```bash
+curl http://127.0.0.1/
+curl http://127.0.0.1/health
+curl http://127.0.0.1/api/workspace/players
+```
+
+Then open the application in a browser:
+
+```text
+http://<server-public-ip>/
+```
 
 ## Development
 
