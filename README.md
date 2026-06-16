@@ -44,13 +44,14 @@ Magic Vibe requires:
 - Git.
 - Node.js 20 LTS or newer.
 - npm.
+- nginx for production static serving and reverse proxying.
 
 On Ubuntu 24.04, install the required system packages as `root` or a user with
 `sudo`:
 
 ```bash
 sudo apt update
-sudo apt install -y ca-certificates curl git python3 python3-venv
+sudo apt install -y ca-certificates curl git nginx python3 python3-venv
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
 sudo apt install -y nodejs
 ```

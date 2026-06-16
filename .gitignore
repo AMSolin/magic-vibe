@@ -9,6 +9,7 @@ __pycache__/
 .venv/
 .test-data/
 .tmp/
+.run/
 backend/pytest-cache*/
 backend/pytest-tmp*/
 
