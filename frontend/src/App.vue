@@ -19,6 +19,7 @@ const items = [
   { label: 'Collection', icon: 'pi pi-box', route: '/' },
   { label: 'Players', icon: 'pi pi-users', route: '/players' },
   { label: 'Decks', icon: 'pi pi-book', route: '/decks' },
+  { label: 'Import', icon: 'pi pi-file-import', route: '/import' },
   { label: 'Admin', icon: 'pi pi-cog', route: '/admin' },
 ];
 </script>

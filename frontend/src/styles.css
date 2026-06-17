@@ -251,6 +251,13 @@ a {
   border-top: 1px solid var(--app-border-subtle);
 }
 
+.tool-panel > .metadata-grid + h3,
+.tool-panel > .metadata-grid + .subsection-header {
+  margin-top: 4px;
+  padding-top: 16px;
+  border-top: 1px solid var(--app-border-subtle);
+}
+
 .metadata-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
@@ -347,6 +354,14 @@ a {
   grid-template-columns: 56px minmax(640px, 1.5fr) minmax(360px, 0.65fr);
 }
 
+.import-workspace {
+  grid-template-columns: 240px minmax(560px, 1.35fr) minmax(320px, 0.65fr);
+}
+
+.import-workspace.sidebar-is-collapsed {
+  grid-template-columns: 56px minmax(560px, 1.35fr) minmax(320px, 0.65fr);
+}
+
 .collection-sidebar,
 .inventory-pane,
 .inspector-pane {
@@ -408,6 +423,62 @@ a {
   align-items: center;
   gap: 6px;
   flex: 0 0 auto;
+}
+
+.import-upload-widget {
+  display: grid;
+  gap: 10px;
+}
+
+.visually-hidden-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  clip-path: inset(50%);
+}
+
+.import-selected-file {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 10px;
+  border: 1px solid var(--app-border-subtle);
+  border-radius: 6px;
+  background: var(--app-surface-muted);
+}
+
+.import-selected-file > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.import-selected-file strong,
+.import-selected-file span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-selected-file span {
+  color: var(--app-text-muted);
+  font-size: 0.875rem;
+}
+
+.import-empty-state {
+  display: grid;
+  min-height: 320px;
+  place-items: center;
+  gap: 10px;
+  color: var(--app-text-muted);
+}
+
+.import-empty-state .pi {
+  font-size: 2rem;
 }
 
 .inventory-pane {

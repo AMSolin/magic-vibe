@@ -7,15 +7,18 @@ import ProgressSpinner from 'primevue/progressspinner';
 
 import {
   type CatalogImport,
+  type DelverLensMappingStatus,
   generateAdminTestCollections,
   type GeneratedTestCollection,
   getApiErrorMessage,
   getCatalogStatus,
+  getDelverLensMappingStatus,
   getScryfallSymbolsStatus,
   getUserDataStatus,
   recreateUserData,
   startCatalogRebuild,
   startCatalogUpdate,
+  updateDelverLensMapping,
   updateScryfallSymbols,
   type CatalogStatus,
   type ScryfallSymbolsStatus,
@@ -26,9 +29,11 @@ import { reloadScryfallSymbols } from '@/shared/scryfallSymbols';
 const status = ref<CatalogStatus | null>(null);
 const userDataStatus = ref<UserDataStatus | null>(null);
 const scryfallSymbolsStatus = ref<ScryfallSymbolsStatus | null>(null);
+const delverLensMappingStatus = ref<DelverLensMappingStatus | null>(null);
 const loading = ref(false);
 const recreatingUserData = ref(false);
 const updatingScryfallSymbols = ref(false);
+const updatingDelverLensMapping = ref(false);
 const generatingTestCollections = ref(false);
 const generatedTestCollections = ref<GeneratedTestCollection[]>([]);
 const userDataDialogVisible = ref(false);
@@ -51,6 +56,9 @@ const userDataButtonLabel = computed(() =>
 );
 const scryfallSymbolsButtonLabel = computed(() =>
   scryfallSymbolsStatus.value?.exists ? 'Update cache' : 'Create cache',
+);
+const delverLensMappingButtonLabel = computed(() =>
+  delverLensMappingStatus.value?.apk_exists ? 'Rebuild from cached APK' : 'Create mapping database',
 );
 
 let statusTimer: number | undefined;
@@ -98,16 +106,27 @@ async function loadStatus(showLoading = true): Promise<void> {
     loading.value = true;
   }
   try {
-    [status.value, userDataStatus.value, scryfallSymbolsStatus.value] = await Promise.all([
+    [
+      status.value,
+      userDataStatus.value,
+      scryfallSymbolsStatus.value,
+      delverLensMappingStatus.value,
+    ] = await Promise.all([
       getCatalogStatus(),
       getUserDataStatus(),
       getScryfallSymbolsStatus(),
+      getDelverLensMappingStatus(),
     ]);
     error.value = null;
     refreshError.value = null;
   } catch (caughtError) {
     const message = getApiErrorMessage(caughtError, 'Application status is unavailable');
-    if (status.value === null && userDataStatus.value === null && scryfallSymbolsStatus.value === null) {
+    if (
+      status.value === null &&
+      userDataStatus.value === null &&
+      scryfallSymbolsStatus.value === null &&
+      delverLensMappingStatus.value === null
+    ) {
       error.value = message;
     } else {
       refreshError.value = `${message}. Showing the last known status.`;
@@ -129,6 +148,21 @@ async function refreshScryfallSymbols(): Promise<void> {
     error.value = getApiErrorMessage(caughtError, 'Scryfall symbols cache could not be updated');
   } finally {
     updatingScryfallSymbols.value = false;
+  }
+}
+
+async function refreshDelverLensMapping(forceDownload: boolean): Promise<void> {
+  updatingDelverLensMapping.value = true;
+  error.value = null;
+  try {
+    delverLensMappingStatus.value = await updateDelverLensMapping(forceDownload);
+  } catch (caughtError) {
+    error.value = getApiErrorMessage(
+      caughtError,
+      'Delver Lens mapping database could not be updated',
+    );
+  } finally {
+    updatingDelverLensMapping.value = false;
   }
 }
 
@@ -234,13 +268,15 @@ onUnmounted(() => {
           </Message>
         </div>
 
+        <h3>Local Storage</h3>
+
         <div class="metadata-grid">
           <div class="field">
-            <span>Database file</span>
+            <span>Local file</span>
             <strong>backend/data/user_data.db</strong>
           </div>
           <div class="field">
-            <span>Last modified at</span>
+            <span>Last modified</span>
             <strong>{{ formatTimestamp(userDataStatus?.modified_at) }}</strong>
           </div>
           <div class="field">
@@ -268,6 +304,8 @@ onUnmounted(() => {
           Creates or refreshes the English and Russian 2010+ test collections from the installed
           local catalog. Existing matching rows are reused and kept at least at quantity 4.
         </Message>
+
+        <h3 v-if="generatedTestCollections.length">Generated Collections</h3>
 
         <div v-if="generatedTestCollections.length" class="metadata-grid">
           <div
@@ -303,11 +341,11 @@ onUnmounted(() => {
         </div>
 
         <Message severity="info">
-          Update downloads the latest MTGJSON source and rebuilds the catalog. Rebuild uses the
-          previously downloaded local source without another large download.
+          Rebuild uses the cached MTGJSON source already stored locally. Update downloads the
+          latest MTGJSON source first, then rebuilds the catalog from it.
         </Message>
 
-        <h3>Installed Catalog</h3>
+        <h3>Source</h3>
 
         <div class="metadata-grid">
           <div class="field">
@@ -315,15 +353,15 @@ onUnmounted(() => {
             <strong>{{ installedCatalog?.source ?? 'Not available' }}</strong>
           </div>
           <div class="field">
-            <span>AllPrintings version date</span>
+            <span>Source date</span>
             <strong>{{ formatTimestamp(installedCatalog?.source_updated_at) }}</strong>
           </div>
           <div class="field">
-            <span>Installed at</span>
+            <span>Last updated</span>
             <strong>{{ formatTimestamp(installedCatalog?.finished_at) }}</strong>
           </div>
           <div class="field">
-            <span>Catalog rows</span>
+            <span>Rows</span>
             <strong>{{ formatValue(installedCatalog?.catalog_row_count) }}</strong>
           </div>
           <div class="field">
@@ -337,7 +375,7 @@ onUnmounted(() => {
         </div>
 
         <div class="section-header subsection-header">
-          <h3>Latest Update Attempt</h3>
+          <h3>Last Operation</h3>
           <Message :severity="statusSeverity(latestImport)" size="small">
             {{ latestImport?.status ?? 'No attempts' }}
           </Message>
@@ -345,11 +383,11 @@ onUnmounted(() => {
 
         <div class="metadata-grid">
           <div class="field">
-            <span>Started at</span>
+            <span>Started</span>
             <strong>{{ formatTimestamp(latestImport?.started_at) }}</strong>
           </div>
           <div class="field">
-            <span>Finished at</span>
+            <span>Finished</span>
             <strong>{{ formatTimestamp(latestImport?.finished_at) }}</strong>
           </div>
           <div class="field note-field">
@@ -361,7 +399,7 @@ onUnmounted(() => {
         <div class="panel-actions">
           <Button
             icon="pi pi-database"
-            label="Rebuild catalog"
+            label="Rebuild from cached source"
             severity="secondary"
             :disabled="catalogOperationRunning"
             :loading="rebuildRunning"
@@ -369,7 +407,7 @@ onUnmounted(() => {
           />
           <Button
             icon="pi pi-download"
-            label="Update catalog"
+            label="Update from latest source"
             :disabled="catalogOperationRunning"
             :loading="updateRunning"
             @click="updateCatalog"
@@ -390,9 +428,11 @@ onUnmounted(() => {
           Existing cached files are retained indefinitely.
         </Message>
 
+        <h3>Local Storage</h3>
+
         <div class="metadata-grid">
           <div class="field">
-            <span>Cache directory</span>
+            <span>Local directory</span>
             <strong>backend/data/cache/scryfall/symbols</strong>
           </div>
           <div class="field">
@@ -400,7 +440,7 @@ onUnmounted(() => {
             <strong>{{ formatValue(scryfallSymbolsStatus?.symbol_count) }}</strong>
           </div>
           <div class="field">
-            <span>Last updated at</span>
+            <span>Last updated</span>
             <strong>{{ formatTimestamp(scryfallSymbolsStatus?.updated_at) }}</strong>
           </div>
         </div>
@@ -411,6 +451,92 @@ onUnmounted(() => {
             :label="scryfallSymbolsButtonLabel"
             :loading="updatingScryfallSymbols"
             @click="refreshScryfallSymbols"
+          />
+        </div>
+      </section>
+
+      <section class="tool-panel">
+        <div class="section-header">
+          <h2>Delver Lens Mapping Database</h2>
+          <Message :severity="delverLensMappingStatus?.exists ? 'success' : 'warn'" size="small">
+            {{ delverLensMappingStatus?.exists ? 'Ready' : 'Not created' }}
+          </Message>
+        </div>
+
+        <Message severity="info">
+          Downloads the current Delver Lens APK from delverlab.com, extracts the embedded res/*.db
+          file, and builds a compact local SQLite mapping database with cards(_id, scryfall_id).
+          Rebuild uses the cached APK when available; update downloads the latest APK first.
+        </Message>
+
+        <h3>Source</h3>
+
+        <div class="metadata-grid">
+          <div class="field">
+            <span>Cached source</span>
+            <strong>{{ delverLensMappingStatus?.apk_path ?? 'backend/data/import/delver-lens.apk' }}</strong>
+          </div>
+          <div class="field">
+            <span>Source version</span>
+            <strong>{{ delverLensMappingStatus?.source_app_version ?? 'Not available' }}</strong>
+          </div>
+          <div class="field">
+            <span>Source date</span>
+            <strong>{{ formatTimestamp(delverLensMappingStatus?.source_release_date) }}</strong>
+          </div>
+          <div class="field">
+            <span>Embedded source file</span>
+            <strong>{{ delverLensMappingStatus?.source_db_member ?? 'Not available' }}</strong>
+          </div>
+        </div>
+
+        <h3>Local Storage</h3>
+
+        <div class="metadata-grid">
+          <div class="field">
+            <span>Local file</span>
+            <strong>{{ delverLensMappingStatus?.database_path ?? 'backend/data/delver_lens_mapping.db' }}</strong>
+          </div>
+          <div class="field">
+            <span>Rows</span>
+            <strong>{{ formatValue(delverLensMappingStatus?.row_count) }}</strong>
+          </div>
+          <div class="field">
+            <span>Unique Scryfall IDs</span>
+            <strong>{{ formatValue(delverLensMappingStatus?.unique_scryfall_ids) }}</strong>
+          </div>
+          <div class="field">
+            <span>File size</span>
+            <strong>{{ formatFileSize(delverLensMappingStatus?.database_file_size) }}</strong>
+          </div>
+        </div>
+
+        <h3>Last Operation</h3>
+
+        <div class="metadata-grid">
+          <div class="field">
+            <span>Last updated</span>
+            <strong>{{ formatTimestamp(delverLensMappingStatus?.updated_at) }}</strong>
+          </div>
+          <div class="field note-field">
+            <span>Last error</span>
+            <strong>{{ delverLensMappingStatus?.last_error ?? 'None' }}</strong>
+          </div>
+        </div>
+
+        <div class="panel-actions">
+          <Button
+            icon="pi pi-database"
+            :label="delverLensMappingButtonLabel"
+            :loading="updatingDelverLensMapping"
+            @click="refreshDelverLensMapping(false)"
+          />
+          <Button
+            icon="pi pi-refresh"
+            label="Update from latest APK"
+            severity="secondary"
+            :loading="updatingDelverLensMapping"
+            @click="refreshDelverLensMapping(true)"
           />
         </div>
       </section>

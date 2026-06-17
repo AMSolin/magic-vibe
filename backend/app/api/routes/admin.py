@@ -1,3 +1,5 @@
+import sqlite3
+import zipfile
 from pathlib import Path
 from time import time
 
@@ -12,12 +14,13 @@ from app.models.user_data import Collection, Player
 from app.schemas.admin import (
     CatalogImportRead,
     CatalogStatusRead,
+    DelverLensMappingStatusRead,
     GeneratedTestCollectionRead,
     GeneratedTestCollectionsRead,
     ScryfallSymbolsStatusRead,
     UserDataStatusRead,
 )
-from app.services import catalog, scryfall
+from app.services import catalog, delver_lens_mapping, scryfall
 from app.services.catalog_download import (
     ACTIVE_DOWNLOAD_STATUSES,
     CATALOG_SOURCE_NAME,
@@ -293,6 +296,24 @@ def update_scryfall_symbols() -> dict:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"Scryfall symbols cache update failed: {error}",
+        ) from error
+
+
+@router.get("/delver-lens-mapping", response_model=DelverLensMappingStatusRead)
+def get_delver_lens_mapping_status() -> dict:
+    return delver_lens_mapping.get_mapping_status()
+
+
+@router.post("/delver-lens-mapping/update", response_model=DelverLensMappingStatusRead)
+def update_delver_lens_mapping(force_download: bool = False) -> dict:
+    try:
+        return delver_lens_mapping.update_mapping_database(force_download=force_download)
+    except RuntimeError as error:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+    except (OSError, ValueError, zipfile.BadZipFile, sqlite3.DatabaseError) as error:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Delver Lens mapping update failed: {error}",
         ) from error
 
 

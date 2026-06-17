@@ -19,6 +19,7 @@ backend/pytest-tmp*/
 *.db-wal
 *.sqlite
 *.sqlite.xz.part
+*.apk
 backend/data/cache/
 
 # Node

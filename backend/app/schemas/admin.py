@@ -33,6 +33,27 @@ class ScryfallSymbolsStatusRead(BaseModel):
     updated_at: int | None
 
 
+class DelverLensMappingStatusRead(BaseModel):
+    exists: bool
+    database_path: str
+    database_file_size: int | None
+    database_modified_at: int | None
+    row_count: int | None
+    unique_scryfall_ids: int | None
+    apk_exists: bool
+    apk_path: str
+    apk_file_size: int | None
+    apk_modified_at: int | None
+    source_url: str | None
+    apk_url: str | None
+    source_app_version: str | None
+    source_release_date: int | None
+    source_db_member: str | None
+    source_table: str | None
+    updated_at: int | None
+    last_error: str | None
+
+
 class GeneratedTestCollectionRead(BaseModel):
     id: int
     name: str

@@ -367,3 +367,103 @@ def test_scryfall_symbols_update_reports_download_failure(
     assert response.json() == {
         "detail": "Scryfall symbols cache update failed: Network unavailable"
     }
+
+
+def test_delver_lens_mapping_status_and_update(
+    app_data_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app_data_session
+    statuses = [
+        {
+            "exists": False,
+            "database_path": "data/delver_lens_mapping.db",
+            "database_file_size": None,
+            "database_modified_at": None,
+            "row_count": None,
+            "unique_scryfall_ids": None,
+            "apk_exists": False,
+            "apk_path": "data/import/delver-lens.apk",
+            "apk_file_size": None,
+            "apk_modified_at": None,
+            "source_url": None,
+            "apk_url": None,
+            "source_app_version": None,
+            "source_release_date": None,
+            "source_db_member": None,
+            "source_table": None,
+            "updated_at": None,
+            "last_error": None,
+        },
+        {
+            "exists": True,
+            "database_path": "data/delver_lens_mapping.db",
+            "database_file_size": 6_430_720,
+            "database_modified_at": 1_781_727_668,
+            "row_count": 128_452,
+            "unique_scryfall_ids": 115_642,
+            "apk_exists": True,
+            "apk_path": "data/import/delver-lens.apk",
+            "apk_file_size": 240_153_906,
+            "apk_modified_at": 1_781_727_666,
+            "source_url": "https://www.delverlab.com/",
+            "apk_url": "https://delver-public.s3.us-west-1.amazonaws.com/app-release.apk",
+            "source_app_version": "6.98",
+            "source_release_date": 1_781_308_800,
+            "source_db_member": "res/Cc.db",
+            "source_table": "cards",
+            "updated_at": 1_781_727_668,
+            "last_error": None,
+        },
+    ]
+    force_download_values: list[bool] = []
+
+    def update_mapping(*, force_download: bool) -> dict:
+        force_download_values.append(force_download)
+        return statuses[1]
+
+    monkeypatch.setattr(
+        "app.api.routes.admin.delver_lens_mapping.get_mapping_status",
+        lambda: statuses[0],
+    )
+    monkeypatch.setattr(
+        "app.api.routes.admin.delver_lens_mapping.update_mapping_database",
+        update_mapping,
+    )
+
+    with TestClient(app) as client:
+        before = client.get("/api/admin/delver-lens-mapping")
+        after = client.post("/api/admin/delver-lens-mapping/update?force_download=true")
+
+    assert before.status_code == 200
+    assert before.json() == statuses[0]
+    assert after.status_code == 200
+    assert after.json() == statuses[1]
+    assert force_download_values == [True]
+
+
+def test_delver_lens_mapping_update_reports_extraction_failure(
+    app_data_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ = app_data_session
+
+    def fail_update(*, force_download: bool) -> dict:
+        _ = force_download
+        raise ValueError("No res/*.db file was found inside Delver Lens APK")
+
+    monkeypatch.setattr(
+        "app.api.routes.admin.delver_lens_mapping.update_mapping_database",
+        fail_update,
+    )
+
+    with TestClient(app) as client:
+        response = client.post("/api/admin/delver-lens-mapping/update")
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": (
+            "Delver Lens mapping update failed: "
+            "No res/*.db file was found inside Delver Lens APK"
+        )
+    }

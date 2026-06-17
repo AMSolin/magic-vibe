@@ -30,6 +30,27 @@ export type ScryfallSymbolsStatus = {
   updated_at: number | null;
 };
 
+export type DelverLensMappingStatus = {
+  exists: boolean;
+  database_path: string;
+  database_file_size: number | null;
+  database_modified_at: number | null;
+  row_count: number | null;
+  unique_scryfall_ids: number | null;
+  apk_exists: boolean;
+  apk_path: string;
+  apk_file_size: number | null;
+  apk_modified_at: number | null;
+  source_url: string | null;
+  apk_url: string | null;
+  source_app_version: string | null;
+  source_release_date: number | null;
+  source_db_member: string | null;
+  source_table: string | null;
+  updated_at: number | null;
+  last_error: string | null;
+};
+
 export type GeneratedTestCollection = {
   id: number;
   name: string;
@@ -446,6 +467,17 @@ export function getScryfallSymbolsStatus(): Promise<ScryfallSymbolsStatus> {
 
 export function updateScryfallSymbols(): Promise<ScryfallSymbolsStatus> {
   return request<ScryfallSymbolsStatus>('/api/admin/scryfall-symbols/update', {
+    method: 'POST',
+  });
+}
+
+export function getDelverLensMappingStatus(): Promise<DelverLensMappingStatus> {
+  return request<DelverLensMappingStatus>('/api/admin/delver-lens-mapping');
+}
+
+export function updateDelverLensMapping(forceDownload = false): Promise<DelverLensMappingStatus> {
+  const params = new URLSearchParams({ force_download: String(forceDownload) });
+  return request<DelverLensMappingStatus>(`/api/admin/delver-lens-mapping/update?${params.toString()}`, {
     method: 'POST',
   });
 }
