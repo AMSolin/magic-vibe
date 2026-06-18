@@ -77,9 +77,9 @@ def _optional_int(value: str | None) -> int | None:
         return None
 
 
-def _download_bytes(url: str) -> tuple[bytes, str | None]:
+def _download_bytes(url: str, *, timeout_seconds: int = 60) -> tuple[bytes, str | None]:
     request = Request(url, headers=HTTP_HEADERS)
-    with urlopen(request, timeout=60) as response:  # noqa: S310
+    with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
         return response.read(), response.headers.get("Last-Modified")
 
 
@@ -98,6 +98,12 @@ def _download_file(url: str, destination: Path) -> tuple[int, str | None]:
             temporary_path.unlink(missing_ok=True)
         except PermissionError:
             pass
+
+
+def _latest_source_metadata() -> tuple[str | None, int | None]:
+    html_bytes, _ = _download_bytes(DELVER_LAB_URL, timeout_seconds=2)
+    html = html_bytes.decode("utf-8", errors="replace")
+    return _parse_latest_changelog_entry(html)
 
 
 def _replace_with_retry(source: Path, destination: Path) -> None:
@@ -295,6 +301,24 @@ def get_mapping_status(session_factory: sessionmaker[Session] = AppDataSessionLo
         finally:
             connection.close()
 
+    latest_source_app_version = None
+    latest_source_release_date = None
+    source_status_error = None
+    try:
+        latest_source_app_version, latest_source_release_date = _latest_source_metadata()
+    except (OSError, ValueError) as error:
+        source_status_error = str(error)
+
+    installed_source_release_date = _optional_int(stored_settings.get("source_release_date"))
+    if not database_path.is_file():
+        source_status = "not_installed"
+    elif latest_source_release_date is None or installed_source_release_date is None:
+        source_status = "unknown"
+    elif installed_source_release_date < latest_source_release_date:
+        source_status = "outdated"
+    else:
+        source_status = "current"
+
     return {
         "exists": database_path.is_file(),
         "database_path": str(database_path),
@@ -309,7 +333,11 @@ def get_mapping_status(session_factory: sessionmaker[Session] = AppDataSessionLo
         "source_url": stored_settings.get("source_url"),
         "apk_url": stored_settings.get("apk_url"),
         "source_app_version": stored_settings.get("source_app_version"),
-        "source_release_date": _optional_int(stored_settings.get("source_release_date")),
+        "source_release_date": installed_source_release_date,
+        "latest_source_app_version": latest_source_app_version,
+        "latest_source_release_date": latest_source_release_date,
+        "source_status": source_status,
+        "source_status_error": source_status_error,
         "source_db_member": stored_settings.get("source_db_member"),
         "source_table": stored_settings.get("source_table"),
         "updated_at": _optional_int(stored_settings.get("updated_at")),

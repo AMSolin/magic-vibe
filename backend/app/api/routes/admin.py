@@ -27,6 +27,7 @@ from app.services.catalog_download import (
     download_catalog_source,
 )
 from app.services.catalog_import import LOCAL_CATALOG_SOURCE_NAME, rebuild_catalog_from_local_source
+from app.services.catalog_source_index import get_catalog_source_index_updated_at
 from app.services.user_data import (
     recreate_user_data_db,
     user_data_database_exists,
@@ -232,10 +233,39 @@ def get_catalog_status(db: Session = Depends(get_app_data_db)) -> CatalogStatusR
         .order_by(CatalogImport.id.desc())
         .limit(1)
     )
+    installed_source_index_setting = db.get(AppSetting, "catalog.source_index_updated_at")
+    installed_source_index_updated_at = (
+        int(installed_source_index_setting.value)
+        if installed_source_index_setting is not None
+        and installed_source_index_setting.value is not None
+        and installed_source_index_setting.value.isdigit()
+        else None
+    )
+    if installed_source_index_updated_at is None and latest_successful_import is not None:
+        installed_source_index_updated_at = latest_successful_import.source_updated_at
+    latest_source_index_updated_at = None
+    source_index_error = None
+    try:
+        latest_source_index_updated_at = get_catalog_source_index_updated_at()
+    except (OSError, ValueError) as error:
+        source_index_error = str(error)
+
+    if latest_successful_import is None:
+        source_index_status = "not_installed"
+    elif latest_source_index_updated_at is None or installed_source_index_updated_at is None:
+        source_index_status = "unknown"
+    elif installed_source_index_updated_at < latest_source_index_updated_at:
+        source_index_status = "outdated"
+    else:
+        source_index_status = "current"
 
     return CatalogStatusRead(
         latest_import=latest_import,
         latest_successful_import=latest_successful_import,
+        latest_source_index_updated_at=latest_source_index_updated_at,
+        installed_source_index_updated_at=installed_source_index_updated_at,
+        source_index_status=source_index_status,
+        source_index_error=source_index_error,
     )
 
 

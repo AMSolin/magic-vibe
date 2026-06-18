@@ -19,6 +19,10 @@ class CatalogImportRead(BaseModel):
 class CatalogStatusRead(BaseModel):
     latest_import: CatalogImportRead | None
     latest_successful_import: CatalogImportRead | None
+    latest_source_index_updated_at: int | None
+    installed_source_index_updated_at: int | None
+    source_index_status: str
+    source_index_error: str | None
 
 
 class UserDataStatusRead(BaseModel):
@@ -48,6 +52,10 @@ class DelverLensMappingStatusRead(BaseModel):
     apk_url: str | None
     source_app_version: str | None
     source_release_date: int | None
+    latest_source_app_version: str | None
+    latest_source_release_date: int | None
+    source_status: str
+    source_status_error: str | None
     source_db_member: str | None
     source_table: str | None
     updated_at: int | None

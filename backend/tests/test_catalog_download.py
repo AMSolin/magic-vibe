@@ -13,6 +13,7 @@ from sqlalchemy.pool import NullPool
 from app.db.app_data_base import AppDataBase
 from app.models.app_data import APP_DATA_MODELS, AppSetting, CatalogImport
 from app.services import catalog_download
+from app.services.catalog_source_index import _find_source_file_timestamp
 
 
 @pytest.fixture()
@@ -43,6 +44,20 @@ def _seed_catalog_import(session_factory: sessionmaker[Session]) -> int:
         return catalog_import.id
 
 
+def test_catalog_source_index_parses_all_printings_sqlite_xz_timestamp() -> None:
+    html = """
+    <html><body>
+    <a href="AllPrintings.sqlite.xz">AllPrintings.sqlite.xz</a> 117.3 MiB 2026-Jun-18 02:10
+    <a href="AllPrintings.sqlite.xz.sha256">AllPrintings.sqlite.xz.sha256</a> 64 B 2026-Jun-18 02:10
+    </body></html>
+    """
+
+    assert (
+        _find_source_file_timestamp(html, "https://mtgjson.com/api/v5/AllPrintings.sqlite.xz")
+        == 1_781_748_600
+    )
+
+
 def test_catalog_download_verifies_and_extracts_source(
     workspace_tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -61,6 +76,11 @@ def test_catalog_download_verifies_and_extracts_source(
 
     monkeypatch.setattr(catalog_download, "_download_file", copy_source)
     monkeypatch.setattr(catalog_download, "_download_checksum", lambda _: source_sha256)
+    monkeypatch.setattr(
+        catalog_download,
+        "get_catalog_source_index_updated_at",
+        lambda _: 1_781_868_600,
+    )
     def complete_import(*_: object, **__: object) -> None:
         with session_factory() as db:
             catalog_import = db.get(CatalogImport, catalog_import_id)
@@ -86,6 +106,7 @@ def test_catalog_download_verifies_and_extracts_source(
         catalog_import = db.get(CatalogImport, catalog_import_id)
         pending_source_path = db.get(AppSetting, "catalog.pending_source_path")
         pending_source_sha256 = db.get(AppSetting, "catalog.pending_source_sha256")
+        source_index_updated_at = db.get(AppSetting, "catalog.source_index_updated_at")
 
     assert destination.read_bytes() == source_contents
     assert catalog_import is not None
@@ -97,6 +118,8 @@ def test_catalog_download_verifies_and_extracts_source(
     assert pending_source_path.value == str(destination)
     assert pending_source_sha256 is not None
     assert pending_source_sha256.value == source_sha256
+    assert source_index_updated_at is not None
+    assert source_index_updated_at.value == "1781868600"
     assert not previous_destination.exists()
 
 
@@ -116,6 +139,11 @@ def test_catalog_download_keeps_previous_source_when_checksum_fails(
 
     monkeypatch.setattr(catalog_download, "_download_file", copy_source)
     monkeypatch.setattr(catalog_download, "_download_checksum", lambda _: "0" * 64)
+    monkeypatch.setattr(
+        catalog_download,
+        "get_catalog_source_index_updated_at",
+        lambda _: 1_781_868_600,
+    )
     destination = tmp_path / "import" / "AllPrintings.sqlite"
     destination.parent.mkdir(parents=True)
     destination.write_bytes(b"existing catalog")

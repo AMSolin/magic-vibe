@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import settings
 from app.db.app_data_session import AppDataSessionLocal
 from app.models.app_data import AppSetting, CatalogImport
+from app.services.catalog_source_index import get_catalog_source_index_updated_at
 from app.services.catalog_import import import_catalog_source
 
 ACTIVE_DOWNLOAD_STATUSES = ("pending", "downloading", "importing")
@@ -115,6 +116,7 @@ def download_catalog_source(
             catalog_import.status = "downloading"
             db.commit()
 
+        source_index_updated_at = get_catalog_source_index_updated_at(source_url)
         source_updated_at = _download_file(source_url, compressed_part)
         expected_sha256 = _download_checksum(f"{source_url}.sha256")
         actual_sha256 = _calculate_sha256(compressed_part)
@@ -135,6 +137,7 @@ def download_catalog_source(
             catalog_import.source_sha256 = actual_sha256
             _set_setting(db, "catalog.pending_source_path", str(destination))
             _set_setting(db, "catalog.pending_source_sha256", actual_sha256)
+            _set_setting(db, "catalog.source_index_updated_at", str(source_index_updated_at))
             db.commit()
         import_catalog_source(
             catalog_import_id,

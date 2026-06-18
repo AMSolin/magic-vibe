@@ -42,6 +42,30 @@ const refreshError = ref<string | null>(null);
 
 const latestImport = computed(() => status.value?.latest_import ?? null);
 const installedCatalog = computed(() => status.value?.latest_successful_import ?? null);
+const catalogSourceStatusLabel = computed(() => {
+  if (!installedCatalog.value) {
+    return 'Not installed';
+  }
+  if (status.value?.source_index_status === 'outdated') {
+    return 'Outdated';
+  }
+  if (status.value?.source_index_status === 'unknown') {
+    return 'Version unknown';
+  }
+  return 'Up to date';
+});
+const catalogSourceStatusSeverity = computed((): 'success' | 'warn' | 'error' | 'info' => {
+  if (!installedCatalog.value) {
+    return 'warn';
+  }
+  if (status.value?.source_index_status === 'outdated') {
+    return 'warn';
+  }
+  if (status.value?.source_index_status === 'unknown') {
+    return 'info';
+  }
+  return 'success';
+});
 const catalogOperationRunning = computed(() =>
   ['pending', 'downloading', 'importing'].includes(latestImport.value?.status ?? ''),
 );
@@ -60,6 +84,30 @@ const scryfallSymbolsButtonLabel = computed(() =>
 const delverLensMappingButtonLabel = computed(() =>
   delverLensMappingStatus.value?.apk_exists ? 'Rebuild from cached APK' : 'Create mapping database',
 );
+const delverLensSourceStatusLabel = computed(() => {
+  if (!delverLensMappingStatus.value?.exists) {
+    return 'Not created';
+  }
+  if (delverLensMappingStatus.value.source_status === 'outdated') {
+    return 'Outdated';
+  }
+  if (delverLensMappingStatus.value.source_status === 'unknown') {
+    return 'Version unknown';
+  }
+  return 'Up to date';
+});
+const delverLensSourceStatusSeverity = computed((): 'success' | 'warn' | 'error' | 'info' => {
+  if (!delverLensMappingStatus.value?.exists) {
+    return 'warn';
+  }
+  if (delverLensMappingStatus.value.source_status === 'outdated') {
+    return 'warn';
+  }
+  if (delverLensMappingStatus.value.source_status === 'unknown') {
+    return 'info';
+  }
+  return 'success';
+});
 
 let statusTimer: number | undefined;
 
@@ -99,6 +147,17 @@ function statusSeverity(catalogImport: CatalogImport | null): 'success' | 'warn'
     return 'warn';
   }
   return 'info';
+}
+
+function optimisticCatalogStatus(catalogImport: CatalogImport): CatalogStatus {
+  return {
+    latest_import: catalogImport,
+    latest_successful_import: installedCatalog.value,
+    latest_source_index_updated_at: status.value?.latest_source_index_updated_at ?? null,
+    installed_source_index_updated_at: status.value?.installed_source_index_updated_at ?? null,
+    source_index_status: status.value?.source_index_status ?? 'unknown',
+    source_index_error: status.value?.source_index_error ?? null,
+  };
 }
 
 async function loadStatus(showLoading = true): Promise<void> {
@@ -198,10 +257,7 @@ async function updateCatalog(): Promise<void> {
   error.value = null;
   try {
     const catalogImport = await startCatalogUpdate();
-    status.value = {
-      latest_import: catalogImport,
-      latest_successful_import: installedCatalog.value,
-    };
+    status.value = optimisticCatalogStatus(catalogImport);
   } catch (caughtError) {
     error.value = getApiErrorMessage(caughtError, 'Catalog update could not be started');
   } finally {
@@ -214,10 +270,7 @@ async function rebuildCatalog(): Promise<void> {
   error.value = null;
   try {
     const catalogImport = await startCatalogRebuild();
-    status.value = {
-      latest_import: catalogImport,
-      latest_successful_import: installedCatalog.value,
-    };
+    status.value = optimisticCatalogStatus(catalogImport);
   } catch (caughtError) {
     error.value = getApiErrorMessage(caughtError, 'Catalog rebuild could not be started');
   } finally {
@@ -335,8 +388,8 @@ onUnmounted(() => {
       <section class="tool-panel">
         <div class="section-header">
           <h2>Catalog Database</h2>
-          <Message :severity="statusSeverity(installedCatalog)" size="small">
-            {{ installedCatalog ? 'Installed' : 'Not installed' }}
+          <Message :severity="catalogSourceStatusSeverity" size="small">
+            {{ catalogSourceStatusLabel }}
           </Message>
         </div>
 
@@ -353,8 +406,12 @@ onUnmounted(() => {
             <strong>{{ installedCatalog?.source ?? 'Not available' }}</strong>
           </div>
           <div class="field">
-            <span>Source date</span>
-            <strong>{{ formatTimestamp(installedCatalog?.source_updated_at) }}</strong>
+            <span>Latest source date</span>
+            <strong>{{ formatTimestamp(status?.latest_source_index_updated_at) }}</strong>
+          </div>
+          <div class="field">
+            <span>Installed source date</span>
+            <strong>{{ formatTimestamp(status?.installed_source_index_updated_at) }}</strong>
           </div>
           <div class="field">
             <span>Last updated</span>
@@ -371,6 +428,10 @@ onUnmounted(() => {
           <div class="field">
             <span>SHA-256</span>
             <strong class="technical-value">{{ installedCatalog?.source_sha256 ?? 'Not available' }}</strong>
+          </div>
+          <div v-if="status?.source_index_error" class="field note-field">
+            <span>Version check error</span>
+            <strong>{{ status.source_index_error }}</strong>
           </div>
         </div>
 
@@ -458,8 +519,8 @@ onUnmounted(() => {
       <section class="tool-panel">
         <div class="section-header">
           <h2>Delver Lens Mapping Database</h2>
-          <Message :severity="delverLensMappingStatus?.exists ? 'success' : 'warn'" size="small">
-            {{ delverLensMappingStatus?.exists ? 'Ready' : 'Not created' }}
+          <Message :severity="delverLensSourceStatusSeverity" size="small">
+            {{ delverLensSourceStatusLabel }}
           </Message>
         </div>
 
@@ -481,12 +542,20 @@ onUnmounted(() => {
             <strong>{{ delverLensMappingStatus?.source_app_version ?? 'Not available' }}</strong>
           </div>
           <div class="field">
-            <span>Source date</span>
+            <span>Latest source date</span>
+            <strong>{{ formatTimestamp(delverLensMappingStatus?.latest_source_release_date) }}</strong>
+          </div>
+          <div class="field">
+            <span>Installed source date</span>
             <strong>{{ formatTimestamp(delverLensMappingStatus?.source_release_date) }}</strong>
           </div>
           <div class="field">
             <span>Embedded source file</span>
             <strong>{{ delverLensMappingStatus?.source_db_member ?? 'Not available' }}</strong>
+          </div>
+          <div v-if="delverLensMappingStatus?.source_status_error" class="field note-field">
+            <span>Version check error</span>
+            <strong>{{ delverLensMappingStatus.source_status_error }}</strong>
           </div>
         </div>
 

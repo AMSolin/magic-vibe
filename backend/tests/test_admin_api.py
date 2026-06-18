@@ -95,8 +95,13 @@ def _create_test_collection_catalog(path: Path) -> None:
 
 def test_catalog_status_is_empty_before_first_import(
     app_data_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _ = app_data_session
+    monkeypatch.setattr(
+        "app.api.routes.admin.get_catalog_source_index_updated_at",
+        lambda: 1_781_868_600,
+    )
 
     with TestClient(app) as client:
         response = client.get("/api/admin/catalog")
@@ -105,12 +110,21 @@ def test_catalog_status_is_empty_before_first_import(
     assert response.json() == {
         "latest_import": None,
         "latest_successful_import": None,
+        "latest_source_index_updated_at": 1_781_868_600,
+        "installed_source_index_updated_at": None,
+        "source_index_status": "not_installed",
+        "source_index_error": None,
     }
 
 
 def test_catalog_status_keeps_installed_catalog_when_latest_attempt_failed(
     app_data_session: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setattr(
+        "app.api.routes.admin.get_catalog_source_index_updated_at",
+        lambda: 1_781_868_600,
+    )
     with app_data_session() as db:
         db.add(
             CatalogImport(
@@ -124,6 +138,7 @@ def test_catalog_status_keeps_installed_catalog_when_latest_attempt_failed(
                 source_sha256="a" * 64,
             )
         )
+        db.add(AppSetting(key="catalog.source_index_updated_at", value="1781781000"))
         db.add(
             CatalogImport(
                 source="MTGJSON AllPrintings.sqlite",
@@ -144,6 +159,10 @@ def test_catalog_status_keeps_installed_catalog_when_latest_attempt_failed(
     assert data["latest_import"]["error_message"] == "Download failed"
     assert data["latest_successful_import"]["status"] == "completed"
     assert data["latest_successful_import"]["catalog_row_count"] == 81_939
+    assert data["latest_source_index_updated_at"] == 1_781_868_600
+    assert data["installed_source_index_updated_at"] == 1_781_781_000
+    assert data["source_index_status"] == "outdated"
+    assert data["source_index_error"] is None
 
 
 def test_catalog_update_starts_background_download(
@@ -390,6 +409,10 @@ def test_delver_lens_mapping_status_and_update(
             "apk_url": None,
             "source_app_version": None,
             "source_release_date": None,
+            "latest_source_app_version": None,
+            "latest_source_release_date": None,
+            "source_status": "not_installed",
+            "source_status_error": None,
             "source_db_member": None,
             "source_table": None,
             "updated_at": None,
@@ -410,6 +433,10 @@ def test_delver_lens_mapping_status_and_update(
             "apk_url": "https://delver-public.s3.us-west-1.amazonaws.com/app-release.apk",
             "source_app_version": "6.98",
             "source_release_date": 1_781_308_800,
+            "latest_source_app_version": "6.98",
+            "latest_source_release_date": 1_781_308_800,
+            "source_status": "current",
+            "source_status_error": None,
             "source_db_member": "res/Cc.db",
             "source_table": "cards",
             "updated_at": 1_781_727_668,

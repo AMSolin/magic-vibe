@@ -16,6 +16,10 @@ export type CatalogImport = {
 export type CatalogStatus = {
   latest_import: CatalogImport | null;
   latest_successful_import: CatalogImport | null;
+  latest_source_index_updated_at: number | null;
+  installed_source_index_updated_at: number | null;
+  source_index_status: 'current' | 'outdated' | 'unknown' | 'not_installed';
+  source_index_error: string | null;
 };
 
 export type UserDataStatus = {
@@ -45,6 +49,10 @@ export type DelverLensMappingStatus = {
   apk_url: string | null;
   source_app_version: string | null;
   source_release_date: number | null;
+  latest_source_app_version: string | null;
+  latest_source_release_date: number | null;
+  source_status: 'current' | 'outdated' | 'unknown' | 'not_installed';
+  source_status_error: string | null;
   source_db_member: string | null;
   source_table: string | null;
   updated_at: number | null;
