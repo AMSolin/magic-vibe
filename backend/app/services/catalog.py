@@ -106,6 +106,25 @@ def search_cards(
     ]
 
 
+def oracle_ids_matching_search(query: str, *, field: str = "name") -> set[str]:
+    normalized_query = query.casefold()
+    if field not in {"name", "type"}:
+        raise ValueError("Unsupported search field")
+    if not normalized_query:
+        return set()
+    with catalog_connection() as catalog:
+        normalized_field = "unicode_casefold(name)" if field == "name" else "unicode_casefold(type)"
+        rows = catalog.execute(
+            f"""
+            select distinct oracle_id
+            from card_search_index
+            where {normalized_field} like ?
+            """,
+            (f"%{normalized_query}%",),
+        ).fetchall()
+    return {_uuid_text(row["oracle_id"]) for row in rows}
+
+
 def search_wish_deck_cards(
     query: str,
     *,

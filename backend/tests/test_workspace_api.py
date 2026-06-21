@@ -1145,6 +1145,50 @@ def test_workspace_collection_items_include_available_quantity(
     ]
 
 
+def test_workspace_collection_items_search_matches_catalog_name_aliases(
+    workspace_client: TestClient,
+) -> None:
+    workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 1},
+    )
+    workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 2, "finish_id": 0, "condition_code": "NM", "quantity": 1},
+    )
+
+    response = workspace_client.get(
+        "/api/workspace/collections/1/items",
+        params={"query": "\u0431\u043e\u043b\u043e\u0442", "search_field": "name"},
+    )
+
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()] == ["Swamp"]
+    assert response.json()[0]["oracle_id"] == ORACLE_ID
+
+
+def test_workspace_collection_items_search_matches_catalog_type_aliases(
+    workspace_client: TestClient,
+) -> None:
+    workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 1, "finish_id": 0, "condition_code": "NM", "quantity": 1},
+    )
+    workspace_client.post(
+        "/api/workspace/collections/1/items",
+        json={"printing_id": 4, "finish_id": 0, "condition_code": "NM", "quantity": 1},
+    )
+
+    response = workspace_client.get(
+        "/api/workspace/collections/1/items",
+        params={"query": "\u0431\u0430\u0437\u043e\u0432\u0430\u044f", "search_field": "type"},
+    )
+
+    assert response.status_code == 200
+    assert [item["name"] for item in response.json()] == ["Swamp"]
+    assert response.json()[0]["type"] == "Basic Land - Swamp"
+
+
 def test_workspace_collection_item_update_rejects_identity_change_when_allocated(
     workspace_client: TestClient,
 ) -> None:

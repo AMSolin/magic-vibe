@@ -1020,7 +1020,25 @@ def _attached_deck_items(db: Session, deck_id: int) -> list[WorkspaceDeckItemRea
 def _attached_collection_items(
     db: Session,
     collection_id: int,
+    *,
+    search_text: str = "",
+    search_field: str = "name",
 ) -> list[WorkspaceCollectionItemRead] | None:
+    normalized_search_text = search_text.casefold()
+    params: list[object] = []
+    joins = ATTACHED_ITEM_JOINS_BASIC
+    if normalized_search_text:
+        search_column = "name" if search_field == "name" else "type"
+        joins = f"""
+            {joins}
+            join (
+                select distinct oracle_id
+                from catalog.card_search_index
+                where unicode_casefold({search_column}) like ?
+            ) as search_match on search_match.oracle_id = p.oracle_id
+        """
+        params.append(f"%{normalized_search_text}%")
+    params.append(collection_id)
     connection: sqlite3.Connection | None = None
     try:
         connection = _attached_catalog_connection(db)
@@ -1032,7 +1050,7 @@ def _attached_collection_items(
                 coalesce(a.allocated_quantity, 0) as allocated_quantity,
                 {ATTACHED_ITEM_SELECT_BASE}
             from collection_items as ci
-            {ATTACHED_ITEM_JOINS_BASIC}
+            {joins}
             left join (
                 select collection_item_id, sum(quantity) as allocated_quantity
                 from deck_items
@@ -1041,7 +1059,7 @@ def _attached_collection_items(
             where ci.collection_id = ?
             order by unicode_casefold(localized_name) asc, ci.created_at desc
             """,
-            (collection_id,),
+            params,
         ).fetchall()
     finally:
         if connection is not None:
@@ -2499,19 +2517,44 @@ def get_printing_image(
 )
 def list_collection_items(
     collection_id: int,
+    query: str = Query(default="", max_length=255),
+    search_field: str = Query(default="name"),
     db: Session = Depends(get_user_data_db),
 ) -> list[WorkspaceCollectionItemRead]:
     if db.get(Collection, collection_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
-    attached_items = _attached_collection_items(db, collection_id)
+    search_text = query.strip()
+    if search_field not in {"name", "type"}:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Invalid search_field",
+        )
+    attached_items = _attached_collection_items(
+        db,
+        collection_id,
+        search_text=search_text,
+        search_field=search_field,
+    )
     if attached_items is not None:
         return attached_items
+    matching_scryfall_ids: set[bytes] | None = None
+    if search_text:
+        try:
+            matching_oracle_ids = catalog.oracle_ids_matching_search(search_text, field=search_field)
+            matching_scryfall_ids = catalog.scryfall_ids_for_oracle_ids(matching_oracle_ids)
+        except FileNotFoundError as error:
+            raise _catalog_error(error) from error
+        if not matching_scryfall_ids:
+            return []
     items = db.scalars(
         select(CollectionItem)
         .where(CollectionItem.collection_id == collection_id)
         .order_by(CollectionItem.created_at.desc(), CollectionItem.id.desc())
     )
-    return _items_read(db, list(items))
+    item_list = list(items)
+    if matching_scryfall_ids is not None:
+        item_list = [item for item in item_list if item.scryfall_id in matching_scryfall_ids]
+    return _items_read(db, item_list)
 
 
 @router.post(

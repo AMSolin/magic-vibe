@@ -105,6 +105,7 @@ const deleteCollectionAllocationItems = ref<WorkspaceCollectionAllocationSummary
 const attributeUpdateAvailableQuantity = ref(0);
 const attributeUpdateAllocationDraft = ref<Record<number, number>>({});
 const inventory = ref<WorkspaceCollectionItem[]>([]);
+const inventoryLoading = ref(false);
 const inventoryFirst = ref(0);
 const inventoryRows = ref(100);
 const inventorySearchQuery = ref('');
@@ -115,6 +116,7 @@ const exactMatch = ref(false);
 const suggestions = ref<CardSuggestion[]>([]);
 const suggestionsOpen = ref(false);
 const selectedAlias = ref<CardSuggestion | null>(null);
+let inventoryRequestId = 0;
 
 function keyruneRarityClass(rarity: string): string {
   return rarity === 'special' ? 'ss-timeshifted' : `ss-${rarity}`;
@@ -221,21 +223,18 @@ let detailsRequestId = 0;
 let editDetailsRequestId = 0;
 let hoverPreviewTimer: number | null = null;
 let hoverPreviewRequestId = 0;
+let inventorySearchTimer: number | undefined;
 
 const selectedCollection = computed(
   () => collections.value.find((collection) => collection.id === selectedCollectionId.value) ?? null,
 );
 const totalCards = computed(() => inventory.value.reduce((sum, item) => sum + item.quantity, 0));
-const filteredInventory = computed(() => {
-  const query = inventorySearchQuery.value.trim().toLocaleLowerCase();
-  if (!query) {
-    return inventory.value;
-  }
-  return inventory.value.filter((item) => {
-    const value = inventorySearchField.value === 'type' ? item.type : item.name;
-    return value.toLocaleLowerCase().includes(query);
-  });
-});
+const inventorySummaryText = computed(() =>
+  inventorySearchQuery.value.trim()
+    ? `${totalCards.value} matching cards`
+    : `${totalCards.value} cards in collection`,
+);
+const filteredInventory = computed(() => inventory.value);
 const paginatedInventory = computed(() =>
   filteredInventory.value.slice(inventoryFirst.value, inventoryFirst.value + inventoryRows.value),
 );
@@ -999,15 +998,50 @@ async function loadInventory(resetPage = false): Promise<void> {
   if (resetPage) {
     inventoryFirst.value = 0;
   }
-  if (selectedCollectionId.value === null) {
+  const collectionId = selectedCollectionId.value;
+  const searchQuery = inventorySearchQuery.value;
+  const searchField = inventorySearchField.value;
+  const requestId = (inventoryRequestId += 1);
+  if (collectionId === null) {
     inventory.value = [];
+    inventoryLoading.value = false;
     return;
   }
+  inventoryLoading.value = true;
   try {
-    inventory.value = await listWorkspaceCollectionItems(selectedCollectionId.value);
+    const items = await listWorkspaceCollectionItems(collectionId, {
+      query: searchQuery,
+      searchField,
+    });
+    if (
+      requestId !== inventoryRequestId ||
+      selectedCollectionId.value !== collectionId ||
+      inventorySearchQuery.value !== searchQuery ||
+      inventorySearchField.value !== searchField
+    ) {
+      return;
+    }
+    inventory.value = items;
     clampInventoryPage();
   } catch (requestError) {
+    if (
+      requestId !== inventoryRequestId ||
+      selectedCollectionId.value !== collectionId ||
+      inventorySearchQuery.value !== searchQuery ||
+      inventorySearchField.value !== searchField
+    ) {
+      return;
+    }
     error.value = getApiErrorMessage(requestError, 'Collection items are unavailable');
+  } finally {
+    if (
+      requestId === inventoryRequestId &&
+      selectedCollectionId.value === collectionId &&
+      inventorySearchQuery.value === searchQuery &&
+      inventorySearchField.value === searchField
+    ) {
+      inventoryLoading.value = false;
+    }
   }
 }
 
@@ -1391,13 +1425,30 @@ watch([search, exactMatch], () => {
   suggestTimer = window.setTimeout(refreshSuggestions, 180);
 });
 
-watch(selectedCollectionId, () => {
-  void refreshInventory(true);
-});
+watch(
+  selectedCollectionId,
+  (collectionId, previousCollectionId) => {
+    inventoryRequestId += 1;
+    if (collectionId !== previousCollectionId) {
+      inventory.value = [];
+      inventoryLoading.value = collectionId !== null;
+    }
+    void refreshInventory(true);
+  },
+  { flush: 'sync' },
+);
 watch(selectedCollectionId, resetCollectionDraft);
 
 watch([inventorySearchQuery, inventorySearchField], () => {
+  inventoryRequestId += 1;
   inventoryFirst.value = 0;
+  inventoryLoading.value = selectedCollectionId.value !== null;
+  if (inventorySearchTimer !== undefined) {
+    window.clearTimeout(inventorySearchTimer);
+  }
+  inventorySearchTimer = window.setTimeout(() => {
+    void loadInventory(true);
+  }, 180);
 });
 
 watch([filteredInventory, inventoryRows], clampInventoryPage);
@@ -1445,6 +1496,9 @@ onMounted(async () => {
 
 onUnmounted(() => {
   stopHoverPreview();
+  if (inventorySearchTimer !== undefined) {
+    window.clearTimeout(inventorySearchTimer);
+  }
   document.removeEventListener('click', handleDocumentClick);
 });
 </script>
@@ -1472,7 +1526,7 @@ onUnmounted(() => {
             <span>{{ collection.name }}</span>
             <span class="sidebar-item-icons">
               <i v-if="collection.is_default" class="pi pi-star-fill" title="Primary collection" />
-              <i v-if="collection.is_wishlist" class="pi pi-heart-fill" title="Wishlist" />
+              <i v-if="collection.is_wishlist" class="pi pi-shopping-cart" title="Wishlist" />
             </span>
           </button>
         </div>
@@ -1486,7 +1540,7 @@ onUnmounted(() => {
     <main class="inventory-pane">
       <div class="workspace-heading">
         <h1>{{ selectedCollection?.name ?? 'Collection' }}</h1>
-        <p>{{ totalCards }} cards in collection</p>
+        <p>{{ inventorySummaryText }}</p>
       </div>
       <div class="inventory-search-row">
         <InputText
@@ -1527,6 +1581,7 @@ onUnmounted(() => {
         data-key="id"
         selection-mode="single"
         :meta-key-selection="false"
+        :loading="inventoryLoading"
         striped-rows
         @row-select="selectInventoryItem($event.data)"
       >

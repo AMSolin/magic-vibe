@@ -996,8 +996,18 @@ export function getWorkspacePrintingDetails(
 
 export function listWorkspaceCollectionItems(
   collectionId: number,
+  options: { query?: string; searchField?: 'name' | 'type' } = {},
 ): Promise<WorkspaceCollectionItem[]> {
-  return request<WorkspaceCollectionItem[]>(`/api/workspace/collections/${collectionId}/items`);
+  const params = new URLSearchParams();
+  const query = options.query?.trim();
+  if (query) {
+    params.set('query', query);
+    params.set('search_field', options.searchField ?? 'name');
+  }
+  const queryString = params.toString();
+  return request<WorkspaceCollectionItem[]>(
+    `/api/workspace/collections/${collectionId}/items${queryString ? `?${queryString}` : ''}`,
+  );
 }
 
 export function addWorkspaceCollectionItem(

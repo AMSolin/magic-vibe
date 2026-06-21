@@ -410,16 +410,15 @@ function highlightDecklistRow(section: string, oracleId: string): void {
   }, 2200);
 }
 
-function deckItemDetails(item: WorkspaceDeckItem): string {
+function deckItemAttributes(item: WorkspaceDeckItem): string {
   return [
-    item.collection_name,
     item.set_code ? `${item.set_code.toUpperCase()} #${item.collector_number ?? ''}` : null,
     item.language,
     item.finish,
     item.condition_code,
   ]
     .filter((part): part is string => Boolean(part))
-    .join(' / ');
+    .join(' · ');
 }
 
 function isWishDeckItem(item: DeckListItem): item is WorkspaceWishDeckItem {
@@ -428,9 +427,13 @@ function isWishDeckItem(item: DeckListItem): item is WorkspaceWishDeckItem {
 
 function deckListItemDetails(item: DeckListItem): string {
   if (isWishDeckItem(item)) {
-    return [item.language, item.type, item.mana_cost].filter(Boolean).join(' / ');
+    return [item.language, item.type, item.mana_cost].filter(Boolean).join(' · ');
   }
-  return deckItemDetails(item);
+  return deckItemAttributes(item);
+}
+
+function deckListItemCollectionName(item: DeckListItem): string {
+  return isWishDeckItem(item) ? '' : item.collection_name ?? '';
 }
 
 function deckItemPreviewCandidate(item: DeckListItem): PreviewCandidate | null {
@@ -1370,7 +1373,7 @@ onBeforeUnmount(() => {
             @click="selectDeck(deck.id)"
           >
             <span>{{ deck.name }}</span>
-            <i v-if="deck.is_wish" class="pi pi-heart-fill" title="Wish deck" />
+            <i v-if="deck.is_wish" class="pi pi-shopping-cart" title="Wish deck" />
           </button>
         </div>
         <div class="sidebar-actions">
@@ -1914,6 +1917,9 @@ onBeforeUnmount(() => {
                 >
                   <div>
                     <strong>{{ deckItem.name }}</strong>
+                    <span v-if="deckListItemCollectionName(deckItem)">
+                      {{ deckListItemCollectionName(deckItem) }}
+                    </span>
                     <span>{{ deckListItemDetails(deckItem) }}</span>
                   </div>
                   <span class="decklist-detail-quantity">{{ deckItem.quantity }}</span>
