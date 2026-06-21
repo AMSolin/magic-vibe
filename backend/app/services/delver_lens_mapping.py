@@ -167,7 +167,7 @@ def _quoted_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
 
 
-def _candidate_tables(connection: sqlite3.Connection) -> Iterable[tuple[str, str, str, str | None]]:
+def _candidate_tables(connection: sqlite3.Connection) -> Iterable[tuple[str, str, str]]:
     rows = connection.execute(
         """
         select name
@@ -184,15 +184,8 @@ def _candidate_tables(connection: sqlite3.Connection) -> Iterable[tuple[str, str
         }
         id_column = columns.get("_id")
         scryfall_column = columns.get("scryfall_id") or columns.get("scryfallid")
-        disabled_column = columns.get("disabled")
         if id_column and scryfall_column:
-            yield table_name, id_column, scryfall_column, disabled_column
-
-
-def _active_card_filter(disabled_column: str | None) -> str:
-    if disabled_column is None:
-        return ""
-    return f"and coalesce({_quoted_identifier(disabled_column)}, 0) = 0"
+            yield table_name, id_column, scryfall_column
 
 
 def _scryfall_blob(value: object) -> bytes | None:
@@ -222,8 +215,7 @@ def _extract_mapping_from_source_db(source_db_path: Path) -> tuple[str, int, int
     source = sqlite3.connect(f"file:{source_db_path}?mode=ro", uri=True)
     try:
         source.row_factory = sqlite3.Row
-        for table_name, id_column, scryfall_column, disabled_column in _candidate_tables(source):
-            active_card_filter = _active_card_filter(disabled_column)
+        for table_name, id_column, scryfall_column in _candidate_tables(source):
             rows = source.execute(
                 f"""
                 select {_quoted_identifier(id_column)} as source_id,
@@ -231,7 +223,6 @@ def _extract_mapping_from_source_db(source_db_path: Path) -> tuple[str, int, int
                 from {_quoted_identifier(table_name)}
                 where {_quoted_identifier(scryfall_column)} is not null
                     and {_quoted_identifier(scryfall_column)} != ''
-                    {active_card_filter}
                 """
             ).fetchall()
             mappings: dict[int, bytes] = {}

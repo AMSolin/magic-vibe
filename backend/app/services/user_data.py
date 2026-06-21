@@ -38,17 +38,12 @@ def ensure_user_data_schema_compatibility() -> None:
     if not database_path.is_file():
         return
     with sqlite3.connect(database_path) as connection:
-        collection_columns = {
-            row[1]: row for row in connection.execute("pragma table_info(collections)").fetchall()
-        }
-        player_id_column = collection_columns.get("player_id")
         collection_indexes = {
             row[1] for row in connection.execute("pragma index_list(collections)").fetchall()
         }
         deck_columns = {
             row[1]: row for row in connection.execute("pragma table_info(decks)").fetchall()
         }
-        needs_nullable_player_migration = player_id_column is not None and player_id_column[3] != 0
         needs_deck_schema_rebuild = bool(deck_columns) and (
             "is_wish" not in deck_columns
             or "updated_at" not in deck_columns
@@ -56,47 +51,6 @@ def ensure_user_data_schema_compatibility() -> None:
             or "is_wishlist" in deck_columns
             or "wishlist_collection_id" in deck_columns
         )
-
-        if needs_nullable_player_migration:
-            connection.execute("pragma foreign_keys = off")
-            connection.executescript(
-                """
-                begin;
-                alter table collections rename to collections_old;
-                create table collections (
-                    id           integer primary key,
-                    player_id    integer references players(id),
-                    name         text not null,
-                    note         text,
-                    is_default   integer not null default 0 check (is_default in (0, 1)),
-                    is_wishlist  integer not null default 0 check (is_wishlist in (0, 1)),
-                    created_at   integer not null,
-                    unique (player_id, name),
-                    check (not (is_default = 1 and is_wishlist = 1))
-                );
-                insert into collections (
-                    id,
-                    player_id,
-                    name,
-                    note,
-                    is_default,
-                    is_wishlist,
-                    created_at
-                )
-                select
-                    id,
-                    player_id,
-                    name,
-                    note,
-                    is_default,
-                    is_wishlist,
-                    created_at
-                from collections_old;
-                drop table collections_old;
-                commit;
-                """
-            )
-            connection.execute("pragma foreign_keys = on")
 
         default_collection_ids = [
             row[0]

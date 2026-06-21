@@ -3,6 +3,7 @@
 :root {
   --app-background: #f7f8fa;
   --app-surface: #ffffff;
+  --app-surface-muted: #f9fafb;
   --app-border: #d1d5db;
   --app-border-subtle: #e5e7eb;
   --app-text: #20242a;
@@ -12,6 +13,8 @@
   --app-accent-soft: #ecfdf5;
   --app-accent-border: #a7f3d0;
   --app-accent-text: #047857;
+  --app-warning-text: #b45309;
+  --app-danger-text: #b91c1c;
   color: var(--app-text);
   background: var(--app-background);
   font-family:
@@ -21,6 +24,7 @@
 :root.app-dark {
   --app-background: #09090b;
   --app-surface: #18181b;
+  --app-surface-muted: #111113;
   --app-border: #3f3f46;
   --app-border-subtle: #27272a;
   --app-text: #f4f4f5;
@@ -30,6 +34,8 @@
   --app-accent-soft: #052e2b;
   --app-accent-border: #047857;
   --app-accent-text: #6ee7b7;
+  --app-warning-text: #fbbf24;
+  --app-danger-text: #f87171;
 }
 
 * {
@@ -336,30 +342,27 @@ a {
 }
 
 .collection-workspace {
+  --workspace-sidebar-width: 240px;
+  --workspace-sidebar-collapsed-width: 56px;
+  --workspace-center-min-width: 736px;
+  --workspace-center-share: 1.65fr;
+  --workspace-inspector-min-width: 360px;
+  --workspace-inspector-share: 0.7fr;
+
   display: grid;
-  grid-template-columns: 200px minmax(640px, 1.5fr) minmax(340px, 0.7fr);
+  grid-template-columns:
+    var(--workspace-sidebar-width)
+    minmax(var(--workspace-center-min-width), var(--workspace-center-share))
+    minmax(var(--workspace-inspector-min-width), var(--workspace-inspector-share));
   gap: 12px;
   min-height: calc(100vh - 130px);
 }
 
 .collection-workspace.sidebar-is-collapsed {
-  grid-template-columns: 56px minmax(640px, 1.5fr) minmax(340px, 0.7fr);
-}
-
-.decks-workspace {
-  grid-template-columns: 200px minmax(640px, 1.5fr) minmax(360px, 0.65fr);
-}
-
-.decks-workspace.sidebar-is-collapsed {
-  grid-template-columns: 56px minmax(640px, 1.5fr) minmax(360px, 0.65fr);
-}
-
-.import-workspace {
-  grid-template-columns: 240px minmax(560px, 1.35fr) minmax(320px, 0.65fr);
-}
-
-.import-workspace.sidebar-is-collapsed {
-  grid-template-columns: 56px minmax(560px, 1.35fr) minmax(320px, 0.65fr);
+  grid-template-columns:
+    var(--workspace-sidebar-collapsed-width)
+    minmax(var(--workspace-center-min-width), var(--workspace-center-share))
+    minmax(var(--workspace-inspector-min-width), var(--workspace-inspector-share));
 }
 
 .collection-sidebar,
@@ -467,6 +470,124 @@ a {
 .import-selected-file span {
   color: var(--app-text-muted);
   font-size: 0.875rem;
+}
+
+.import-stats {
+  display: grid;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--app-border-subtle);
+  border-radius: 6px;
+  background: var(--app-surface-muted);
+}
+
+.import-stat-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 12px;
+  min-height: 30px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  background: var(--app-surface);
+}
+
+.import-stat-row span {
+  overflow: hidden;
+  color: var(--app-text-secondary);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-stat-row strong {
+  min-width: 2ch;
+  color: var(--app-text);
+  font-size: 1rem;
+  line-height: 1;
+  text-align: right;
+}
+
+.import-stat-row-warn strong {
+  color: var(--app-warning-text);
+}
+
+.import-stat-row-error strong {
+  color: var(--app-danger-text);
+}
+
+.import-entity-stats {
+  gap: 4px;
+  padding: 6px;
+}
+
+.import-entity-stats .import-stat-row {
+  min-height: 28px;
+  padding: 5px 8px;
+}
+
+.import-entity-stats .import-stat-row span {
+  font-size: 0.75rem;
+}
+
+.import-entity-stats .import-stat-row strong {
+  max-width: 150px;
+  overflow: hidden;
+  font-size: 0.9375rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.import-issues-list {
+  display: grid;
+  gap: 8px;
+}
+
+.import-actions-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.import-action-block {
+  display: grid;
+  gap: 10px;
+  padding-block: 4px 12px;
+  border-bottom: 1px solid var(--app-border);
+}
+
+.import-action-block:last-child {
+  border-bottom: 0;
+}
+
+.import-action-block h2 {
+  margin: 0;
+  color: var(--app-text);
+  font-size: 0.95rem;
+}
+
+.import-action-block p {
+  margin: 0;
+  color: var(--app-text-muted);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.decklist-summary-row.import-decklist-summary-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.import-decklist-summary-row > strong {
+  justify-self: end;
+  text-align: right;
+}
+
+.import-decklist-summary-label {
+  cursor: pointer;
+}
+
+.import-card-detail-row .p-message {
+  margin-top: 4px;
 }
 
 .import-empty-state {

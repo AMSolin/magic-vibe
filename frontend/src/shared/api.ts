@@ -120,7 +120,7 @@ export type WorkspaceDeck = {
 
 export type WorkspaceDeckWrite = {
   name: string;
-  player_id: number | null;
+  player_id: number;
   note: string | null;
   is_wish?: boolean;
   created_at?: number;
@@ -233,11 +233,117 @@ export type WorkspacePlayerWrite = {
 
 export type WorkspaceCollectionWrite = {
   name: string;
-  player_id: number | null;
+  player_id: number;
   note: string | null;
   is_default: boolean;
   is_wishlist: boolean;
   created_at?: number;
+};
+
+export type ImportTargetType = 'collection' | 'wishlist' | 'deck' | 'wishdeck';
+export type ImportTargetCollectionMode = 'new' | 'existing' | 'import';
+export type ImportMergeSection = 'keep' | 'main' | 'side' | 'maybe' | 'commander';
+
+export type DelverLensImportAttributeChange = {
+  source_card_id: number;
+  source_list_id: number;
+  container_name: string;
+  card_name: string;
+  quantity: number;
+  target_type?: ImportTargetType;
+  attribute: 'language' | 'finish';
+  before_code: string | number;
+  before: string;
+  after_code: string | number;
+  after: string;
+  reason: string;
+};
+
+export type DelverLensImportCard = {
+  id?: number;
+  source_card_id: number;
+  source_list_id: number;
+  delver_card_id: number;
+  printing_id: number | null;
+  scryfall_id: string | null;
+  oracle_id: string | null;
+  name: string;
+  set_code: string | null;
+  collector_number: string | null;
+  mana_cost: string;
+  type: string;
+  quantity: number;
+  section: string;
+  condition_code: string | null;
+  language_code: string | null;
+  language: string | null;
+  finish_id: number | null;
+  finish: string | null;
+  attribute_changes: DelverLensImportAttributeChange[];
+  warnings: string[];
+  errors: string[];
+};
+
+export type DelverLensImportEntity = {
+  id: number;
+  source_list_id: number;
+  source_category: number;
+  source_category_label: string;
+  target_type: ImportTargetType;
+  target_type_label: string;
+  name: string;
+  note: string | null;
+  player_id: number;
+  created_at: number;
+  source_background: number | null;
+  source_tab: number | null;
+  source_uuid: string | null;
+  target_collection_mode: ImportTargetCollectionMode | null;
+  target_collection_id: number | null;
+  target_import_list_id: number | null;
+  card_count: number;
+  total_quantity: number;
+  mapped_count: number;
+  error_count: number;
+  warning_count: number;
+  errors: string[];
+  warnings: string[];
+  attribute_changes: DelverLensImportAttributeChange[];
+  cards: DelverLensImportCard[];
+};
+
+export type DelverLensImportPreview = {
+  session_id: string;
+  status: 'draft' | 'completed';
+  source_filename: string;
+  source: {
+    kind: 'delver-lens-dlens';
+    version: string | null;
+    timestamp: string | null;
+  };
+  default_player_id: number;
+  selected_entity_id: number | null;
+  entities: DelverLensImportEntity[];
+};
+
+export type DelverLensImportEntityEdit = {
+  id: number;
+  source_list_id: number;
+  target_type: ImportTargetType;
+  name: string;
+  note: string | null;
+  player_id: number;
+  created_at: number;
+  target_collection_mode: ImportTargetCollectionMode | null;
+  target_collection_id: number | null;
+  target_import_list_id: number | null;
+};
+
+export type DelverLensImportResult = {
+  created_collections: WorkspaceCollection[];
+  updated_collections: WorkspaceCollection[];
+  created_decks: WorkspaceDeck[];
+  attribute_changes: DelverLensImportAttributeChange[];
 };
 
 export type CardSuggestion = {
@@ -443,6 +549,29 @@ async function requestResponse(path: string, init?: RequestInit): Promise<Respon
   return response;
 }
 
+async function requestForm<T>(path: string, formData: FormData): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: 'POST',
+    body: formData,
+  });
+
+  if (!response.ok) {
+    let detail: string | null = null;
+    let rawDetail: unknown;
+    try {
+      const body = (await response.json()) as ApiErrorBody;
+      rawDetail = body.detail;
+      detail = formatApiErrorDetail(body.detail);
+    } catch {
+      // Fall back to the HTTP status when the response body is not JSON.
+    }
+
+    throw new ApiError(detail ?? `API request failed: ${response.status}`, response.status, rawDetail);
+  }
+
+  return response.json() as Promise<T>;
+}
+
 export function getCatalogStatus(): Promise<CatalogStatus> {
   return request<CatalogStatus>('/api/admin/catalog');
 }
@@ -492,6 +621,63 @@ export function updateDelverLensMapping(forceDownload = false): Promise<DelverLe
 
 export function generateAdminTestCollections(): Promise<GeneratedTestCollections> {
   return request<GeneratedTestCollections>('/api/admin/test-collections/generate', {
+    method: 'POST',
+  });
+}
+
+export function previewDelverLensImport(file: File): Promise<DelverLensImportPreview> {
+  const formData = new FormData();
+  formData.append('file', file);
+  return requestForm<DelverLensImportPreview>('/api/import/delver-lens/preview', formData);
+}
+
+export function getDelverLensImportSession(sessionId: string): Promise<DelverLensImportPreview> {
+  return request<DelverLensImportPreview>(`/api/import/delver-lens/sessions/${sessionId}`);
+}
+
+export function clearDelverLensImportSession(sessionId: string): Promise<void> {
+  return request<void>(`/api/import/delver-lens/sessions/${sessionId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function updateDelverLensImportEntity(
+  sessionId: string,
+  entityId: number,
+  entity: DelverLensImportEntityEdit,
+): Promise<DelverLensImportPreview> {
+  return request<DelverLensImportPreview>(`/api/import/delver-lens/sessions/${sessionId}/entities/${entityId}`, {
+    method: 'PATCH',
+    body: JSON.stringify(entity),
+  });
+}
+
+export function deleteDelverLensImportEntity(
+  sessionId: string,
+  entityId: number,
+): Promise<DelverLensImportPreview> {
+  return request<DelverLensImportPreview>(`/api/import/delver-lens/sessions/${sessionId}/entities/${entityId}`, {
+    method: 'DELETE',
+  });
+}
+
+export function mergeDelverLensImportEntity(
+  sessionId: string,
+  entityId: number,
+  targetEntityId: number,
+  mergeSection: ImportMergeSection,
+): Promise<DelverLensImportPreview> {
+  return request<DelverLensImportPreview>(
+    `/api/import/delver-lens/sessions/${sessionId}/entities/${entityId}/merge`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ target_entity_id: targetEntityId, merge_section: mergeSection }),
+    },
+  );
+}
+
+export function applyDelverLensImport(sessionId: string): Promise<DelverLensImportResult> {
+  return request<DelverLensImportResult>(`/api/import/delver-lens/sessions/${sessionId}/apply`, {
     method: 'POST',
   });
 }

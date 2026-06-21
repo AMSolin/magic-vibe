@@ -309,9 +309,7 @@ def test_workspace_collection_settings_crud(workspace_client: TestClient) -> Non
         "/api/workspace/collections/1",
         json={"player_id": None},
     )
-    assert detached_default.status_code == 200
-    assert detached_default.json()["player_id"] is None
-    assert detached_default.json()["is_default"] is True
+    assert detached_default.status_code == 422
 
     updated = workspace_client.patch(
         f"/api/workspace/collections/{created.json()['id']}",
@@ -369,20 +367,20 @@ def test_workspace_deck_settings_crud(workspace_client: TestClient) -> None:
         json={"name": "Commander plan", "player_id": 1, "is_wish": False},
     )
     assert duplicate_same_type.status_code == 409
-    assert duplicate_other_type.status_code == 201
+    assert duplicate_other_type.status_code == 409
 
     updated = workspace_client.patch(
         f"/api/workspace/decks/{created.json()['id']}",
         json={
             "name": "Renamed plan",
-            "player_id": None,
+            "player_id": 1,
             "note": "Updated",
             "created_at": 1_810_000_000,
         },
     )
     assert updated.status_code == 200
     assert updated.json()["name"] == "Renamed plan"
-    assert updated.json()["player_id"] is None
+    assert updated.json()["player_id"] == 1
     assert updated.json()["is_wish"] is True
     assert updated.json()["created_at"] == 1_810_000_000
 
@@ -1002,12 +1000,12 @@ def test_workspace_player_settings_validation(workspace_client: TestClient) -> N
     }
     assert confirmed_delete.status_code == 204
     collections_after_player_delete = workspace_client.get("/api/workspace/collections").json()
-    assert collections_after_player_delete[0]["player_id"] is None
+    assert collections_after_player_delete[0]["player_id"] == second_player.json()["id"]
     assert collections_after_player_delete[0]["is_default"] is True
     assert unnamed.status_code == 422
 
 
-def test_workspace_player_delete_clears_deck_owner(workspace_client: TestClient) -> None:
+def test_workspace_player_delete_transfers_deck_owner(workspace_client: TestClient) -> None:
     created_player = workspace_client.post(
         "/api/workspace/players",
         json={"name": "Second player"},
@@ -1030,7 +1028,7 @@ def test_workspace_player_delete_clears_deck_owner(workspace_client: TestClient)
     }
     assert confirmed.status_code == 204
     decks = workspace_client.get("/api/workspace/decks").json()
-    assert next(deck for deck in decks if deck["id"] == created_deck["id"])["player_id"] is None
+    assert next(deck for deck in decks if deck["id"] == created_deck["id"])["player_id"] == 1
 
 
 def test_workspace_collection_settings_validation(workspace_client: TestClient) -> None:

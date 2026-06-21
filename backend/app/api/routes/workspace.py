@@ -426,7 +426,7 @@ def _commit_deck(db: Session) -> None:
         db.rollback()
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail="Deck with this name already exists for this owner and deck type",
+            detail="Deck with this name already exists for this owner",
         ) from error
 
 
@@ -1417,10 +1417,21 @@ def delete_player(
         if player.is_default
         else None
     )
+    fallback_owner = db.scalar(
+        select(Player)
+        .where(Player.id != player.id)
+        .order_by(Player.is_default.desc(), Player.created_at, Player.id)
+        .limit(1)
+    )
+    if fallback_owner is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Choose another player before deleting this one",
+        )
     for collection in affected_collections:
-        collection.player_id = None
+        collection.player = fallback_owner
     for deck in affected_decks:
-        deck.player_id = None
+        deck.player = fallback_owner
     db.delete(player)
     db.flush()
     if replacement is not None:
@@ -1446,7 +1457,7 @@ def create_deck(
     name = payload.name.strip()
     if not name:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Name is required")
-    if payload.player_id is not None and db.get(Player, payload.player_id) is None:
+    if db.get(Player, payload.player_id) is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
     created_at = payload.created_at if payload.created_at is not None else int(time())
     deck = Deck(
@@ -1480,12 +1491,14 @@ def update_deck(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="Name is required",
             )
-    if (
-        "player_id" in update_data
-        and update_data["player_id"] is not None
-        and db.get(Player, update_data["player_id"]) is None
-    ):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
+    if "player_id" in update_data:
+        if update_data["player_id"] is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Owner is required",
+            )
+        if db.get(Player, update_data["player_id"]) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
     for field, value in update_data.items():
         setattr(deck, field, value)
     deck.updated_at = int(time())
@@ -2264,8 +2277,14 @@ def update_collection(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Collection not found")
     update_data = payload.model_dump(exclude_unset=True)
     requested_player_id = update_data.get("player_id")
-    if requested_player_id is not None and db.get(Player, requested_player_id) is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
+    if "player_id" in update_data:
+        if requested_player_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Owner is required",
+            )
+        if db.get(Player, requested_player_id) is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Player not found")
     was_default = collection.is_default
     requested_default = update_data.pop("is_default", None)
     next_is_default = requested_default if requested_default is not None else collection.is_default

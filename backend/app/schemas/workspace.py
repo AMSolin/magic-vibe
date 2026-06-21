@@ -29,7 +29,7 @@ class WorkspacePlayerUpdate(BaseModel):
 
 class WorkspaceCollectionCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    player_id: int
+    player_id: int = Field(ge=1)
     note: str | None = None
     is_default: bool = False
     is_wishlist: bool = False
@@ -38,7 +38,7 @@ class WorkspaceCollectionCreate(BaseModel):
 
 class WorkspaceCollectionUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
-    player_id: int | None = None
+    player_id: int | None = Field(default=None, ge=1)
     note: str | None = None
     is_default: bool | None = None
     is_wishlist: bool | None = None
@@ -71,7 +71,7 @@ class WorkspaceDeckRead(BaseModel):
 
 class WorkspaceDeckCreate(BaseModel):
     name: str = Field(min_length=1, max_length=255)
-    player_id: int | None = None
+    player_id: int = Field(ge=1)
     note: str | None = None
     is_wish: bool = False
     created_at: int | None = Field(default=None, ge=0)
@@ -79,7 +79,7 @@ class WorkspaceDeckCreate(BaseModel):
 
 class WorkspaceDeckUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
-    player_id: int | None = None
+    player_id: int | None = Field(default=None, ge=1)
     note: str | None = None
     created_at: int | None = Field(default=None, ge=0)
 

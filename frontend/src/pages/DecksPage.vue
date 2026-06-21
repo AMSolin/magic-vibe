@@ -189,11 +189,8 @@ const draftIsWish = ref(false);
 const selectedDeck = computed(
   () => decks.value.find((deck) => deck.id === selectedDeckId.value) ?? null,
 );
-const preferredPlayer = computed(() => players.value.find((player) => player.is_default) ?? null);
-const ownerOptions = computed(() => [
-  { id: null, name: 'No owner' },
-  ...players.value.map((player) => ({ id: player.id, name: player.name })),
-]);
+const preferredPlayer = computed(() => players.value.find((player) => player.is_default) ?? players.value[0] ?? null);
+const ownerOptions = computed(() => players.value.map((player) => ({ id: player.id, name: player.name })));
 const visibleSections = computed(() =>
   ['commander', 'main', 'side', 'maybe'].filter(
     (section) => section === 'main' || rowsForSection(section).length > 0,
@@ -1077,7 +1074,7 @@ async function refreshAll(preferredDeckId?: number): Promise<void> {
 
 async function createDeck(): Promise<void> {
   const createdAt = dateToTimestamp(draftCreatedAt.value);
-  if (!draftName.value.trim() || createdAt === null) {
+  if (!draftName.value.trim() || createdAt === null || draftPlayerId.value === null) {
     return;
   }
   saving.value = true;
@@ -1105,7 +1102,7 @@ async function createDeck(): Promise<void> {
 async function saveDeckMetadata(): Promise<void> {
   const deck = selectedDeck.value;
   const createdAt = dateToTimestamp(draftCreatedAt.value);
-  if (!deck || !draftName.value.trim() || createdAt === null) {
+  if (!deck || !draftName.value.trim() || createdAt === null || draftPlayerId.value === null) {
     return;
   }
   saving.value = true;
