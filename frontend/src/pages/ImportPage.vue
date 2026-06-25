@@ -72,6 +72,18 @@ type PreviewCandidate = {
   language_code: string;
   name: string;
 };
+type AttributeChangeCardGroup = {
+  key: string;
+  name: string;
+  quantity: number;
+  changes: DelverLensImportAttributeChange[];
+};
+type AttributeChangeContainerGroup = {
+  key: string;
+  name: string;
+  cards: AttributeChangeCardGroup[];
+  changeCount: number;
+};
 
 const TARGET_TYPE_OPTIONS: { label: string; value: ImportTargetType }[] = [
   { label: 'Collection', value: 'collection' },
@@ -146,7 +158,7 @@ const importTypeOptions: { label: string; value: ImportType }[] = [
 const selectedImportLabel = computed(
   () =>
     importTypeOptions.find((option) => option.value === selectedImportType.value)?.label ??
-    'Import source',
+    'Import method',
 );
 
 const selectedFileSize = computed(() => {
@@ -167,6 +179,36 @@ const activeImportFileMeta = computed(() => selectedFileSize.value || (importSes
 
 const regularCollections = computed(() => collections.value.filter((collection) => !collection.is_wishlist));
 const wishlistCollections = computed(() => collections.value.filter((collection) => collection.is_wishlist));
+const importAttributeChangeGroups = computed<AttributeChangeContainerGroup[]>(() => {
+  const groups = new Map<string, AttributeChangeContainerGroup>();
+  for (const change of importResult.value?.attribute_changes ?? []) {
+    const containerKey = `${change.source_list_id}:${change.container_name}`;
+    let container = groups.get(containerKey);
+    if (!container) {
+      container = {
+        key: containerKey,
+        name: change.container_name,
+        cards: [],
+        changeCount: 0,
+      };
+      groups.set(containerKey, container);
+    }
+    const cardKey = `${change.source_card_id}:${change.card_name}`;
+    let card = container.cards.find((candidate) => candidate.key === cardKey);
+    if (!card) {
+      card = {
+        key: cardKey,
+        name: change.card_name,
+        quantity: change.quantity,
+        changes: [],
+      };
+      container.cards.push(card);
+    }
+    card.changes.push(change);
+    container.changeCount += 1;
+  }
+  return [...groups.values()];
+});
 
 const totalRows = computed(() => importEntities.value.length);
 const totalCards = computed(() =>
@@ -265,7 +307,7 @@ const importInfoDraftErrors = computed(() => {
   return entityValidationErrors(importEntityDraftToEntity(entity, draft));
 });
 const activeImportInfoErrors = computed(() =>
-  selectedEntity.value && !importCompleted.value ? entityDisplayValidationErrors(selectedEntity.value) : [],
+  selectedEntity.value && !importCompleted.value ? importInfoDraftErrors.value : [],
 );
 const selectedIssueCount = computed(() =>
   selectedEntity.value && !importCompleted.value
@@ -885,13 +927,6 @@ function entityDisplayValidationErrors(entity: DelverLensImportEntity): string[]
   if (importCompleted.value) {
     return [];
   }
-  if (
-    importInfoDirty.value &&
-    selectedEntity.value?.id === entity.id &&
-    selectedEntityDraft.value
-  ) {
-    return entityValidationErrors(importEntityDraftToEntity(entity, selectedEntityDraft.value));
-  }
   return entityValidationErrors(entity);
 }
 
@@ -1113,13 +1148,14 @@ function importCardTargetCollectionName(entity: DelverLensImportEntity): string 
 
 function importCardAttributeLine(card: DelverLensImportCard, entity: DelverLensImportEntity): string {
   if (entity.target_type === 'wishdeck') {
-    return [card.language, card.type, card.mana_cost].filter(Boolean).join(' / ');
+    return card.language ?? '';
   }
   const setLabel = card.set_code ? card.set_code.toUpperCase() : null;
   const collectorLabel = card.collector_number ? `#${card.collector_number}` : null;
-  return [setLabel, collectorLabel, card.language, card.finish, card.condition_code]
+  const printingLabel = [setLabel, collectorLabel].filter(Boolean).join(' ');
+  return [printingLabel, card.language, card.finish, card.condition_code]
     .filter(Boolean)
-    .join(' / ');
+    .join(' · ');
 }
 
 function attributeLabel(attribute: string): string {
@@ -1264,7 +1300,7 @@ async function applyImport(): Promise<void> {
       <template v-if="!sidebarCollapsed">
         <h2>Import</h2>
         <label class="field">
-          <span>Source</span>
+          <span>Import method</span>
           <Select
             v-model="selectedImportType"
             :options="importTypeOptions"
@@ -1433,7 +1469,7 @@ async function applyImport(): Promise<void> {
           </section>
 
           <label class="field">
-            <span>Target type</span>
+            <span>Type</span>
             <Select
               :model-value="selectedEntityDraft.target_type"
               :options="TARGET_TYPE_OPTIONS"
@@ -1572,6 +1608,7 @@ async function applyImport(): Promise<void> {
 
           <section class="import-action-block">
             <h2>Merge</h2>
+            <p>Combine these cards with another import item and remove the original from the preview.</p>
             <label class="field">
               <span>Target</span>
               <Select
@@ -1593,12 +1630,17 @@ async function applyImport(): Promise<void> {
               />
             </label>
             <Button
-              icon="pi pi-arrow-right-arrow-left"
               label="Merge into target"
               :loading="actionLoading"
               :disabled="!canMergeSelectedEntity"
               @click="mergeSelectedImportEntity"
-            />
+            >
+              <template #icon>
+                <span class="material-symbols-outlined import-merge-icon" aria-hidden="true">
+                  merge_type
+                </span>
+              </template>
+            </Button>
           </section>
         </section>
 
@@ -1688,15 +1730,39 @@ async function applyImport(): Promise<void> {
       class="attribute-update-dialog"
     >
       <section v-if="importResult" class="attribute-update-summary">
-        <div
-          v-for="change in importResult.attribute_changes"
-          :key="`${change.source_list_id}:${change.source_card_id}:${change.attribute}`"
-          class="attribute-update-row"
+        <p class="attribute-update-description">
+          Some card details were adjusted to match available catalog data.
+        </p>
+        <details
+          v-for="group in importAttributeChangeGroups"
+          :key="group.key"
+          class="attribute-update-group"
         >
-          <strong>{{ change.card_name }}</strong>
-          <span>{{ change.container_name }}</span>
-          <span>{{ change.attribute }}: {{ change.before }} -> {{ change.after }}</span>
-        </div>
+          <summary>
+            <strong>{{ group.name }}</strong>
+            <span>
+              {{ group.cards.length }} {{ group.cards.length === 1 ? 'card' : 'cards' }} adjusted
+            </span>
+          </summary>
+          <div class="attribute-update-card-list">
+            <article v-for="card in group.cards" :key="card.key" class="attribute-update-card">
+              <div class="attribute-update-card-heading">
+                <strong>{{ card.name }}</strong>
+                <span v-if="card.quantity > 1">x{{ card.quantity }}</span>
+              </div>
+              <div
+                v-for="change in card.changes"
+                :key="`${change.source_list_id}:${change.source_card_id}:${change.attribute}`"
+                class="attribute-update-change"
+              >
+                <span>{{ attributeLabel(change.attribute) }}</span>
+                <strong>{{ change.before }}</strong>
+                <i class="pi pi-arrow-right" aria-hidden="true" />
+                <strong>{{ change.after }}</strong>
+              </div>
+            </article>
+          </div>
+        </details>
       </section>
       <template #footer>
         <Button label="Close" @click="changeDialogVisible = false" />

@@ -15,6 +15,7 @@ from app.models.user_data import (
     DeckItem,
     Player,
     USER_DATA_MODELS,
+    WishDeckItem,
 )
 from app.services import catalog
 from app.services.delver_lens_import import (
@@ -185,6 +186,48 @@ def test_apply_import_ignores_unrecognized_cards(
         "Collection import",
         "Wishlist import",
     ]
+
+
+def test_apply_import_merges_duplicate_wish_deck_items_with_autoflush_disabled(
+    import_environment: tuple[Path, sessionmaker[Session]],
+) -> None:
+    dlens_path, session_factory = import_environment
+    with sqlite3.connect(dlens_path) as dlens_db:
+        dlens_db.execute(
+            """
+            insert into cards values (
+                4, 20, 0, 0.0, 1, null, 1781209502401, 2, '', 'Near Mint', 'English',
+                0, 0, 0, 1, '', '', 0.0, ''
+            )
+            """
+        )
+        dlens_db.commit()
+
+    with session_factory() as db:
+        preview = create_delver_lens_import_session(dlens_path, "sample.dlens", db)
+        session_id = preview["session_id"]
+        deck_entity = next(entity for entity in preview["entities"] if entity["source_list_id"] == 2)
+        update_import_session_entity(
+            session_id,
+            deck_entity["id"],
+            target_type="wishdeck",
+            name=deck_entity["name"],
+            note=deck_entity["note"],
+            player_id=deck_entity["player_id"],
+            created_at=deck_entity["created_at"],
+            target_collection_ref_type=None,
+            target_collection_ref_id=None,
+            db=db,
+        )
+
+        result = apply_import_session(session_id, db)
+
+    assert [deck["name"] for deck in result["created_decks"]] == ["Deck import"]
+    with session_factory() as db:
+        deck = db.scalar(select(Deck).where(Deck.name == "Deck import"))
+        assert deck is not None
+        wish_items = list(db.scalars(select(WishDeckItem).where(WishDeckItem.deck_id == deck.id)))
+        assert [(item.section, item.quantity) for item in wish_items] == [("commander", 3)]
 
 
 def test_import_session_merge_physically_moves_and_sums_cards(

@@ -573,6 +573,11 @@ a {
   line-height: 1.4;
 }
 
+.import-merge-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
 .decklist-summary-row.import-decklist-summary-row {
   grid-template-columns: minmax(0, 1fr) auto;
 }
@@ -1990,6 +1995,115 @@ a {
 }
 
 .attribute-change-row .pi {
+  font-size: 0.7rem;
+}
+
+.attribute-update-dialog {
+  width: min(560px, calc(100vw - 32px));
+}
+
+.attribute-update-summary {
+  display: grid;
+  gap: 10px;
+}
+
+.attribute-update-description {
+  margin: 0 0 4px;
+  color: var(--app-text-muted);
+  font-size: 0.9rem;
+  line-height: 1.4;
+}
+
+.attribute-update-group {
+  border: 1px solid var(--app-border);
+  border-radius: 6px;
+  background: var(--app-surface-muted);
+}
+
+.attribute-update-group summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.attribute-update-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.attribute-update-group summary::before {
+  content: "\e932";
+  flex: 0 0 auto;
+  color: var(--app-text-muted);
+  font-family: "primeicons";
+  font-size: 0.75rem;
+  line-height: 1;
+  transition: transform 0.15s ease;
+}
+
+.attribute-update-group[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.attribute-update-group summary strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attribute-update-group summary span {
+  margin-left: auto;
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.attribute-update-card-list {
+  display: grid;
+  gap: 10px;
+  padding: 0 12px 12px;
+}
+
+.attribute-update-card {
+  display: grid;
+  gap: 6px;
+  padding-top: 10px;
+  border-top: 1px solid var(--app-border-subtle);
+}
+
+.attribute-update-card-heading,
+.attribute-update-change {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.attribute-update-card-heading {
+  justify-content: space-between;
+}
+
+.attribute-update-card-heading span {
+  color: var(--app-text-muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.attribute-update-change {
+  color: var(--app-text-secondary);
+  font-size: 0.85rem;
+}
+
+.attribute-update-change > span {
+  min-width: 64px;
+  color: var(--app-text-muted);
+  font-weight: 700;
+}
+
+.attribute-update-change .pi {
   font-size: 0.7rem;
 }
 

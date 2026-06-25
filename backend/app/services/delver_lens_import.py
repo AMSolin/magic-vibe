@@ -1553,6 +1553,7 @@ def _add_deck_item(
         )
     else:
         item.quantity += quantity
+    db.flush()
 
 
 def _add_wish_deck_item(
@@ -1583,3 +1584,4 @@ def _add_wish_deck_item(
     else:
         item.quantity += card["quantity"]
         item.language_code = card["language_code"]
+    db.flush()
